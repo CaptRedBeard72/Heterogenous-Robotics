@@ -6,7 +6,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from numpy import inf
 from torch.utils.tensorboard import SummaryWriter
 from replay_buffer import ReplayBuffer
 
@@ -14,8 +13,7 @@ import rclpy
 from rclpy.node import Node
 import threading
 import math
-import random
-from gazebo_msgs.msg import ModelState, ContactsState
+from gazebo_msgs.msg import ModelState, ModelStates, ContactsState
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import PointCloud2
@@ -23,7 +21,6 @@ from squaternion import Quaternion
 from std_srvs.srv import Empty
 from visualization_msgs.msg import Marker, MarkerArray
 import point_cloud2 as pc2
-from sklearn.cluster import DBSCAN
 
 # Parameters
 GOAL_REACHED_DIST = 0.3
@@ -44,7 +41,6 @@ class Actor(nn.Module):
         self.layer_3 = nn.Linear(300, action_dim)
         self.tanh = nn.Tanh()
 
-        # Ensure symmetric initialization
         nn.init.uniform_(self.layer_1.weight, -0.003, 0.003)
         nn.init.uniform_(self.layer_2.weight, -0.003, 0.003)
         nn.init.uniform_(self.layer_3.weight, -0.003, 0.003)
@@ -97,15 +93,15 @@ class TD3(object):
         self.max_action = max_action
         self.writer = SummaryWriter(log_dir="./DRL_robot_navigation_ros2/src/td3/scripts/runs")
         self.iter_count = 0
-        self.expl_noise = expl_noise  # Initialize exploration noise
+        self.expl_noise = expl_noise
 
     def get_action(self, state):
         state = torch.Tensor(state.reshape(1, -1)).to(device)
         action = self.actor(state).cpu().data.numpy().flatten()
-        action = action + np.random.normal(0, self.expl_noise, size=action.shape)  # Symmetric action noise
+        action = action + np.random.normal(0, self.expl_noise, size=action.shape)
         action = np.clip(action, -self.max_action, self.max_action)
         return action
-    
+
     def train(self, replay_buffer, iterations, batch_size=100, discount=0.99, tau=0.005, policy_noise=0.2, noise_clip=0.5, policy_freq=2):
         for it in range(iterations):
             batch_states, batch_actions, batch_rewards, batch_dones, batch_next_states = replay_buffer.sample_batch(batch_size)
@@ -153,50 +149,32 @@ class TD3(object):
         self.actor.load_state_dict(torch.load("%s/%s_actor.pth" % (directory, filename)))
         self.critic.load_state_dict(torch.load("%s/%s_critic.pth" % (directory, filename)))
 
-def is_box_detected(velodyne_data):
-    # Adjust these thresholds as needed
-    box_distance_min = 0.1
-    box_distance_max = 3.0
-
-    try:
-        box_points = [
-            distance for distance in velodyne_data
-            if box_distance_min < distance < box_distance_max
-        ]
-    except Exception as e:
-        print(f"Error in box detection loop: {e}")
-        print(f"velodyne_data: {velodyne_data}")
-        return False
-
-    return len(box_points) > 3  # Arbitrary threshold to determine if the box is detected
+def is_box_detected(box_position, robot_position, detection_radius=3.0):
+    distance = np.linalg.norm(np.array(box_position) - np.array(robot_position))
+    return distance < detection_radius
 
 def adjust_action_towards_box(robot_x, robot_y, robot_theta, box_position):
-    # Calculate the direction towards the box and adjust the action
     box_x, box_y = box_position
     delta_x = box_x - robot_x
     delta_y = box_y - robot_y
     angle_to_box = np.arctan2(delta_y, delta_x)
-
-    # Calculate the angle difference
     angle_diff = angle_to_box - robot_theta
-    angle_diff = (angle_diff + np.pi) % (2 * np.pi) - np.pi  # Normalize to [-pi, pi]
+    angle_diff = (angle_diff + np.pi) % (2 * np.pi) - np.pi
 
-    # Define linear and angular velocity adjustments
-    linear_velocity = 0.5  # Move forward
-    angular_velocity = angle_diff  # Turn towards the box
+    linear_velocity = 0.5
+    angular_velocity = angle_diff
 
-    return [linear_velocity, angular_velocity]  # Return as a list
+    return [linear_velocity, angular_velocity]
 
-# GazeboNode 
 class GazeboEnv(Node):
     def __init__(self, environment_dim):
         super().__init__('env')
-        self.environment_dim = environment_dim  # Use environment_dim parameter
+        self.environment_dim = environment_dim
         self.odom_x = 0
         self.odom_y = 0
 
-        self.goal_x = 3.5  # Instance variable
-        self.goal_y = 3.5  # Instance variable
+        self.goal_x = 3.5
+        self.goal_y = 3.5
 
         self.set_self_state = ModelState()
         self.set_self_state.model_name = "r1"
@@ -223,7 +201,7 @@ class GazeboEnv(Node):
         self.publisher2 = self.create_publisher(MarkerArray, "linear_velocity", 1)
         self.publisher3 = self.create_publisher(MarkerArray, "angular_velocity", 1)
 
-        self.box_contact = False  # Initialize box contact status
+        self.box_contact = False
         self.box_contact_subscriber = self.create_subscription(
             ContactsState,
             "/gazebo/default/physics/contacts",
@@ -231,10 +209,36 @@ class GazeboEnv(Node):
             10
         )
 
-        self.start_time = None  # To track the start time of each episode
-        self.last_box_detection_time = 0  # Track the last time the box was detected
-        self.box_detection_cooldown = 5  # Cooldown period in seconds
-        self.timeout_occurred = False  # Track if timeout occurred in the current episode
+        self.model_states_subscriber = self.create_subscription(
+            ModelStates,
+            "/gazebo/model_states",
+            self.model_states_callback,
+            10
+        )
+
+        self.start_time = None
+        self.last_box_detection_time = 0
+        self.box_detection_cooldown = 5
+        self.timeout_occurred = False
+
+        self.create_timer(1.0, self.log_box_position)  # Log every 1 second
+
+    def model_states_callback(self, msg):
+        try:
+            self.get_logger().info(f"Received ModelStates message with {len(msg.name)} models.")
+            for i, name in enumerate(msg.name):
+                self.get_logger().info(f"Model {i}: {name}, Position: {msg.pose[i].position}")
+            if "target_box" in msg.name:
+                index = msg.name.index("target_box")
+                self.box_state.pose = msg.pose[index]
+                self.get_logger().info(f"Box detected in model states: {self.box_state.pose.position}")
+            else:
+                self.get_logger().warning("Box model not found in the model states.")
+        except Exception as e:
+            self.get_logger().error(f"Error in model_states_callback: {e}")
+
+    def log_box_position(self):
+        self.get_logger().info(f"Current box position: x={self.box_state.pose.position.x}, y={self.box_state.pose.position.y}, z={self.box_state.pose.position.z}")
 
     def box_contact_callback(self, msg):
         self.box_contact = any(
@@ -247,7 +251,7 @@ class GazeboEnv(Node):
 
     def step(self, action):
         global last_odom, velodyne_data
-        done = False  # Initialize done variable at the beginning
+        done = False
 
         if last_odom is None:
             self.get_logger().warning("Odometry data not received yet, waiting...")
@@ -259,14 +263,6 @@ class GazeboEnv(Node):
             self.get_logger().error("Timeout: Odometry data not received.")
             return np.zeros(self.environment_dim + 4), 0, True, False
 
-        # Check if the box is detected
-        try:
-            box_detected = is_box_detected(velodyne_data)
-        except Exception as e:
-            self.get_logger().error(f"Error during box detection: {e}")
-            box_detected = False
-
-        # Update odometry data
         self.odom_x = last_odom.pose.pose.position.x
         self.odom_y = last_odom.pose.pose.position.y
         quaternion = Quaternion(
@@ -278,15 +274,18 @@ class GazeboEnv(Node):
         euler = quaternion.to_euler(degrees=False)
         angle = round(euler[2], 4)
 
-        # Check if the box is detected and adjust the action if needed
+        robot_position = [self.odom_x, self.odom_y]
+        box_position = [self.box_state.pose.position.x, self.box_state.pose.position.y]
+        box_detected = is_box_detected(box_position, robot_position)
+
+        self.get_logger().info(f"Box detected: {box_detected}, Box position: {box_position}")
+
         if box_detected:
-            box_position = [self.box_state.pose.position.x, self.box_state.pose.position.y]
             action = adjust_action_towards_box(self.odom_x, self.odom_y, angle, box_position)
 
-        # Publish the robot action
         vel_cmd = Twist()
-        vel_cmd.linear.x = float(action[0])  # Ensure symmetric scaling
-        vel_cmd.angular.z = float(action[1])  # Ensure symmetric scaling
+        vel_cmd.linear.x = float(action[0])
+        vel_cmd.angular.z = float(action[1])
         self.vel_pub.publish(vel_cmd)
 
         self.call_service(self.unpause)
@@ -295,7 +294,6 @@ class GazeboEnv(Node):
 
         laser_state = [velodyne_data[:]]
 
-        # Calculate distance and angle to the goal
         distance = np.linalg.norm([self.odom_x - self.goal_x, self.odom_y - self.goal_y])
         skew_x = self.goal_x - self.odom_x
         skew_y = self.goal_y - self.odom_y
@@ -307,8 +305,6 @@ class GazeboEnv(Node):
         theta = beta - angle
         theta = (theta + np.pi) % (2 * np.pi) - np.pi
 
-        # Check if the box is at the target position
-        box_position = [self.box_state.pose.position.x, self.box_state.pose.position.y]
         box_target_distance = np.linalg.norm(np.array(box_position) - np.array(self.target_position))
         reached_goal = box_target_distance < GOAL_REACHED_DIST
 
@@ -319,7 +315,6 @@ class GazeboEnv(Node):
         else:
             target = False
 
-        # Timeout handling
         current_time = time.time()
         if self.start_time is None:
             self.start_time = current_time
@@ -329,22 +324,20 @@ class GazeboEnv(Node):
             self.get_logger().info("Timeout: Robot did not find the box within 5 minutes.")
             done = True
             timeout = True
-            self.timeout_occurred = True  # Mark the timeout as occurred
+            self.timeout_occurred = True
         else:
             timeout = False
 
-        # Construct the state
         robot_state = [distance, theta, action[0], action[1]]
         state = np.append(laser_state, robot_state)
 
-        min_laser = min(velodyne_data)  # Just calculate min_laser for potential use in rewards
+        min_laser = min(velodyne_data)
         reward = self.get_reward(target, action, min_laser, self.box_contact, timeout, box_detected, current_time)
 
-        # Reset box contact status
         self.box_contact = False
 
         return state, reward, done, target
-    
+
     def get_reward(self, target, action, min_laser, box_contact, timeout, box_detected, current_time):
         reward = 0.0
 
@@ -353,31 +346,26 @@ class GazeboEnv(Node):
             reward = 1000.0
         elif timeout:
             self.get_logger().info("Timeout occurred -500 points")
-            reward = -500.0  # Negative reward for timeout
+            reward = -500.0
         elif box_contact:
             self.get_logger().info("Box contact +500 points")
-            reward = 500.0  # Additional reward for touching the box
+            reward = 500.0
         elif box_detected and (current_time - self.last_box_detection_time) > self.box_detection_cooldown:
             self.get_logger().info("Box detected +10 points")
-            self.last_box_detection_time = current_time  # Update the last detection time
-            reward = 10.0  # Reward for detecting the box
+            self.last_box_detection_time = current_time
+            reward = 10.0
         else:
-            # Reward for moving towards the box
             box_distance = np.linalg.norm([self.box_state.pose.position.x - self.odom_x, self.box_state.pose.position.y - self.odom_y])
             reward += 1.0 - box_distance
 
-            # Reward for moving towards the goal
             distance_to_goal = np.linalg.norm([self.goal_x - self.box_state.pose.position.x, self.goal_y - self.box_state.pose.position.y])
             reward += 1.0 - distance_to_goal
 
-            # Reward for moving forward and slight penalty for turning
-            forward_reward = 1.0 - abs(action[0])  # Reward for moving forward
-            turn_penalty = 0.5 * abs(action[1])  # Penalize excessive turning
+            forward_reward = 1.0 - abs(action[0])
+            turn_penalty = 0.5 * abs(action[1])
 
-            # Proximity penalty for being too close to obstacles
             proximity_penalty = (1 - min_laser if min_laser < 1 else 0.0) / 2
 
-            # Combine rewards and penalties
             reward += forward_reward - turn_penalty - proximity_penalty
 
         return reward
@@ -405,9 +393,10 @@ class GazeboEnv(Node):
         self.goal_x = 3.5
         self.goal_y = 3.5
 
-        self.box_state.pose.position.x = np.random.uniform(-4.5, 4.5)
-        self.box_state.pose.position.y = np.random.uniform(-4.5, 4.5)
+        # Ensure the box position is not modified and stays as defined in the world file
         self.set_state.publish(self.box_state)
+
+        self.get_logger().info(f"Box position after reset: x={self.box_state.pose.position.x}, y={self.box_state.pose.position.y}, z={self.box_state.pose.position.z}")
 
         self.publish_markers([0.0, 0.0])
 
@@ -477,12 +466,6 @@ class GazeboEnv(Node):
         markerArray.markers.append(marker)
         self.publisher.publish(markerArray)
 
-    # @staticmethod
-    # def observe_collision(laser_data, box_detected, box_contact):
-    #     min_laser = min(laser_data)
-    #     collision = min_laser < COLLISION_DIST and not box_detected and not box_contact
-    #     return collision, min_laser
-
 class OdomSubscriber(Node):
     def __init__(self):
         super().__init__('odom_subscriber')
@@ -517,8 +500,6 @@ class VelodyneSubscriber(Node):
                     if self.gaps[j][0] <= beta < self.gaps[j][1]:
                         velodyne_data[j] = min(velodyne_data[j], dist)
                         break
-        # Debugging: print out the structure of velodyne_data
-        # print(f"Processed velodyne_data: {velodyne_data}")
 
 def evaluate(env, network, epoch, eval_episodes=10):
     avg_reward = 0.0
@@ -530,7 +511,6 @@ def evaluate(env, network, epoch, eval_episodes=10):
         done = False
         while not done:
             action = network.get_action(np.array(state))
-            # env.get_logger().info(f"Action: {action}")
             a_in = [(action[0] + 1) / 2, action[1]]
             state, reward, done, reached_goal = env.step(a_in)
             avg_reward += reward
@@ -556,7 +536,7 @@ def main(args=None):
     max_ep = 500
     eval_ep = 10
     max_timesteps = 5e6
-    expl_noise = 1  # Initial exploration noise
+    expl_noise = 1
     expl_decay_steps = 500000
     expl_min = 0.1
     batch_size = 40
@@ -582,7 +562,7 @@ def main(args=None):
 
     torch.manual_seed(seed)
     np.random.seed(seed)
-    state_dim = environment_dim * 3 + robot_dim  # Correctly calculate state_dim
+    state_dim = environment_dim * 3 + robot_dim
     action_dim = 2
     max_action = 1
 
@@ -612,6 +592,7 @@ def main(args=None):
     executor = rclpy.executors.MultiThreadedExecutor(num_threads=4)
     executor.add_node(odom_subscriber)
     executor.add_node(velodyne_subscriber)
+    executor.add_node(env)
 
     executor_thread = threading.Thread(target=executor.spin, daemon=True)
     executor_thread.start()
@@ -657,8 +638,8 @@ def main(args=None):
                     continue
 
             if expl_noise > expl_min:
-                expl_noise -= ((1 - expl_min) / expl_decay_steps) * 0.1  # Adjust the decrement factor as needed
-                network.expl_noise = expl_noise  # Update exploration noise
+                expl_noise -= ((1 - expl_min) / expl_decay_steps) * 0.1
+                network.expl_noise = expl_noise
 
             action = network.get_action(np.array(state))
             action = np.clip(action + np.random.normal(0, expl_noise, size=action_dim), -max_action, max_action)
