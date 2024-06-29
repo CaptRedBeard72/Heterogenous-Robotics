@@ -48,6 +48,7 @@ install(
     launch/test_simulation.launch.py
     launch/pioneer3dx.rviz
     launch/test.launch.py
+    launch/model_state_checker.launch.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
