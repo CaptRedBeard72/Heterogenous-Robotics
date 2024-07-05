@@ -6,30 +6,29 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.tensorboard import SummaryWriter
+from replay_buffer import ReplayBuffer
 
 import rclpy
 from rclpy.node import Node
 import threading
-
 import math
-import random
-
-import point_cloud2 as pc2
-from gazebo_msgs.msg import ModelState
+from gazebo_msgs.msg import ModelState, ModelStates, ContactsState
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import PointCloud2
 from squaternion import Quaternion
 from std_srvs.srv import Empty
-from visualization_msgs.msg import Marker
-from visualization_msgs.msg import MarkerArray
+from visualization_msgs.msg import Marker, MarkerArray
+import point_cloud2 as pc2
 
-GOAL_REACHED_DIST = 0.3
-COLLISION_DIST = 0.35
+GOAL_REACHED_DIST = 0.5
+COLLISION_DIST = 0.2
 TIME_DELTA = 0.2
+MAX_DISTANCE_FROM_BOX = 5.0  # Maximum allowed distance from the box
 
 last_odom = None
-environment_dim = 20
+environment_dim = 75
 velodyne_data = np.ones(environment_dim) * 10
 
 class Actor(nn.Module):
@@ -47,60 +46,40 @@ class Actor(nn.Module):
         a = self.tanh(self.layer_3(s))
         return a
 
-# td3 network
-class td3(object):
-    def __init__(self, state_dim, action_dim):
-        # Initialize the Actor network
+class TD3:
+    def __init__(self, state_dim, action_dim, max_action):
         self.actor = Actor(state_dim, action_dim).to(device)
+        self.max_action = max_action
 
     def get_action(self, state):
-        # Function to get the action from the actor
         state = torch.Tensor(state.reshape(1, -1)).to(device)
         return self.actor(state).cpu().data.numpy().flatten()
 
     def load(self, filename, directory):
-        # Expand the user path
-        directory = os.path.expanduser(directory)
         actor_path = os.path.join(directory, f"{filename}_actor.pth")
-        critic_path = os.path.join(directory, f"{filename}_critic.pth")
-
         if not os.path.isfile(actor_path):
             raise FileNotFoundError(f"Model file not found: {actor_path}")
-        if not os.path.isfile(critic_path):
-            raise FileNotFoundError(f"Model file not found: {critic_path}")
-
         print(f"Loading actor model from: {actor_path}")
-        print(f"Loading critic model from: {critic_path}")
-
-        # Load the models
         self.actor.load_state_dict(torch.load(actor_path))
-        # Assuming there is a critic model as well
-        # self.critic.load_state_dict(torch.load(critic_path))
 
-# Check if the random goal position is located on an obstacle and do not accept it if it is
-def check_pos(x, y):
-    goal_ok = False
-    
-    if x > -0.55 and 1.7 > y > -1.7:
-        goal_ok = True
-
-    return goal_ok
+def is_box_detected(velodyne_data, detection_range=2.0):
+    detection_threshold = sum(velodyne_data < detection_range)
+    detected = detection_threshold > (0.1 * len(velodyne_data))  # Adjust the threshold as needed
+    return detected
 
 class GazeboEnv(Node):
-    """Superclass for all Gazebo environments."""
-
-    def __init__(self):
+    def __init__(self, environment_dim):
         super().__init__('env')
-
-        self.environment_dim = 20
+        self.environment_dim = environment_dim
         self.odom_x = 0
         self.odom_y = 0
-
-        self.goal_x = 1
-        self.goal_y = 0.0
-
-        self.upper = 5.0
-        self.lower = -5.0
+        self.goal_x = 3.5
+        self.goal_y = 3.5
+        self.collision = False  # Simple collision flag
+        self.box_detected_flag = False
+        self.previous_box_position = None
+        self.timeout_start_time = time.time()  # Initialize the timeout start time
+        self.timeout_duration = 120  # Timeout duration in seconds
 
         self.set_self_state = ModelState()
         self.set_self_state.model_name = "r1"
@@ -112,57 +91,72 @@ class GazeboEnv(Node):
         self.set_self_state.pose.orientation.z = 0.0
         self.set_self_state.pose.orientation.w = 1.0
 
-        # Set up the ROS publishers and subscribers
+        self.box_state = ModelState()
+        self.box_state.model_name = "target_box"
+        self.target_position = [self.goal_x, self.goal_y]
+
         self.vel_pub = self.create_publisher(Twist, "/cmd_vel", 1)
         self.set_state = self.create_publisher(ModelState, "gazebo/set_model_state", 10)
-
         self.unpause = self.create_client(Empty, "/unpause_physics")
         self.pause = self.create_client(Empty, "/pause_physics")
         self.reset_proxy = self.create_client(Empty, "/reset_world")
-        self.req = Empty.Request
+        self.req = Empty.Request()
 
         self.publisher = self.create_publisher(MarkerArray, "goal_point", 3)
-        self.publisher2 = self.create_publisher(MarkerArray, "linear_velocity", 1)
-        self.publisher3 = self.create_publisher(MarkerArray, "angular_velocity", 1)
 
-    # Perform an action and read a new state
+        self.model_states_subscriber = self.create_subscription(
+            ModelStates,
+            "/gazebo/model_states",
+            self.model_states_callback,
+            10
+        )
+
+        self.start_time = None
+        self.last_box_detection_time = 0
+        self.box_detection_cooldown = 5
+        self.timeout_occurred = False
+
+        self.create_timer(1.0, self.publish_goal_marker)  # Publish goal marker every 1 second
+
+    def model_states_callback(self, msg):
+        try:
+            if "target_box" in msg.name:
+                index = msg.name.index("target_box")
+                self.box_state.pose = msg.pose[index]
+            else:
+                self.get_logger().warning("Box model not found in the model states.")
+        except Exception as e:
+            self.get_logger().error(f"Error in model_states_callback: {e}")
+
+    def has_box_moved(self):
+        current_box_position = [self.box_state.pose.position.x, self.box_state.pose.position.y]
+        if self.previous_box_position is None:
+            self.previous_box_position = current_box_position
+            return False
+        box_moved = np.linalg.norm(np.array(current_box_position) - np.array(self.previous_box_position)) > 0.01  # Threshold to consider as movement
+        self.previous_box_position = current_box_position
+        return box_moved
+
+    def observe_collision(self, laser_data):
+        # Detect a collision from laser data
+        min_laser = min(laser_data)
+        if min_laser < COLLISION_DIST:
+            self.get_logger().info("Box touched!")
+            return True, min_laser
+        return False, min_laser
+
     def step(self, action):
-        global velodyne_data
-        target = False
-        
-        # Publish the robot action
-        vel_cmd = Twist()
-        vel_cmd.linear.x = float(action[0])
-        vel_cmd.angular.z = float(action[1])
-        self.vel_pub.publish(vel_cmd)
-        self.publish_markers(action)
+        global last_odom, velodyne_data
+        done = False
 
-        while not self.unpause.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('service not available, waiting again...')
+        if last_odom is None:
+            start_time = time.time()
+            timeout = 10
+            while last_odom is None and (time.time() - start_time) < timeout:
+                rclpy.spin_once(self, timeout_sec=0.1)
+            if last_odom is None:
+                return np.zeros(self.environment_dim + 7), 0, True, False  # robot_dim is 7
 
-        try:
-            self.unpause.call_async(Empty.Request())
-        except:
-            print("/unpause_physics service call failed")
-
-        # propagate state for TIME_DELTA seconds
-        time.sleep(TIME_DELTA)
-
-        while not self.pause.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('service not available, waiting again...')
-
-        try:
-            self.pause.call_async(Empty.Request())
-        except (rclpy.ServiceException) as e:
-            print("/gazebo/pause_physics service call failed")
-
-        # read velodyne laser state
-        done, collision, min_laser = self.observe_collision(velodyne_data)
-        v_state = []
-        v_state[:] = velodyne_data[:]
-        laser_state = [v_state]
-
-        # Calculate robot heading from odometry data
         self.odom_x = last_odom.pose.pose.position.x
         self.odom_y = last_odom.pose.pose.position.y
         quaternion = Quaternion(
@@ -174,179 +168,202 @@ class GazeboEnv(Node):
         euler = quaternion.to_euler(degrees=False)
         angle = round(euler[2], 4)
 
-        # Calculate distance to the goal from the robot
-        distance = np.linalg.norm(
-            [self.odom_x - self.goal_x, self.odom_y - self.goal_y]
-        )
+        robot_position = [self.odom_x, self.odom_y]
+        box_detected = is_box_detected(velodyne_data)
 
-        # Calculate the relative angle between the robots heading and heading toward the goal
-        skew_x = self.goal_x - self.odom_x
-        skew_y = self.goal_y - self.odom_y
-        dot = skew_x * 1 + skew_y * 0
-        mag1 = math.sqrt(math.pow(skew_x, 2) + math.pow(skew_y, 2))
-        mag2 = math.sqrt(math.pow(1, 2) + math.pow(0, 2))
-        beta = math.acos(dot / (mag1 * mag2))
-        if skew_y < 0:
-            if skew_x < 0:
-                beta = -beta
-            else:
-                beta = 0 - beta
-        theta = beta - angle
-        if theta > np.pi:
-            theta = np.pi - theta
-            theta = -np.pi - theta
-        if theta < -np.pi:
-            theta = -np.pi - theta
-            theta = np.pi - theta
+        collision, min_laser = self.observe_collision(velodyne_data)
 
-        # Detect if the goal has been reached and give a large positive reward
-        if distance < GOAL_REACHED_DIST:
-            self.get_logger().info("GOAL is reached!")
-            target = True
+        if collision:
+            box_x = self.box_state.pose.position.x
+            box_y = self.box_state.pose.position.y
+            direction_to_goal = np.arctan2(self.goal_y - box_y, self.goal_x - box_x)
+
+            # Normalize the angle difference to the range [-pi, pi]
+            angle_diff = direction_to_goal - angle
+            while angle_diff > np.pi:
+                angle_diff -= 2 * np.pi
+            while angle_diff < -np.pi:
+                angle_diff += 2 * np.pi
+
+            vel_cmd = Twist()
+            vel_cmd.linear.x = 0.5  # Move forward with constant speed
+            vel_cmd.angular.z = 1 * -angle_diff  # Adjust orientation towards the goal
+            self.vel_pub.publish(vel_cmd)
+        elif box_detected:
+            self.box_detected_flag = True
+            box_x = self.box_state.pose.position.x
+            box_y = self.box_state.pose.position.y
+            direction_to_box = np.arctan2(box_y - self.odom_y, box_x - self.odom_x)
+
+            # Normalize the angle difference to the range [-pi, pi]
+            angle_diff = direction_to_box - angle
+            while angle_diff > np.pi:
+                angle_diff -= 2 * np.pi
+            while angle_diff < -np.pi:
+                angle_diff += 2 * np.pi
+
+            vel_cmd = Twist()
+            vel_cmd.linear.x = 0.5  # Move forward with constant speed
+            vel_cmd.angular.z = 1 * -angle_diff  # Adjust orientation towards the box
+            self.vel_pub.publish(vel_cmd)
+        else:
+            self.box_detected_flag = False
+            vel_cmd = Twist()
+            vel_cmd.linear.x = float(action[0])
+            vel_cmd.angular.z = float(action[1])
+            self.vel_pub.publish(vel_cmd)
+
+        self.call_service(self.unpause)
+        time.sleep(TIME_DELTA)
+        self.call_service(self.pause)
+
+        laser_state = velodyne_data[:self.environment_dim]
+
+        box_x = self.box_state.pose.position.x
+        box_y = self.box_state.pose.position.y
+
+        distance_to_goal = np.linalg.norm([box_x - self.goal_x, box_y - self.goal_y])
+        distance_to_box = np.linalg.norm([self.odom_x - box_x, self.odom_y - box_y])
+
+        robot_state = [
+            distance_to_goal,
+            angle,
+            distance_to_box,
+            box_x - self.odom_x,
+            box_y - self.odom_y,
+            action[0],
+            action[1]
+        ]
+
+        state = np.concatenate((laser_state, robot_state))
+
+        reached_goal = distance_to_goal < GOAL_REACHED_DIST
+        box_moved = self.has_box_moved()
+        current_time = time.time()
+
+        if current_time - self.timeout_start_time > self.timeout_duration:
+            self.get_logger().info("Timeout: The robot did not achieve the goal in the given time.")
+            done = True
+            reward = -500.0
+        else:
+            reward = self.get_reward(
+                reached_goal, 
+                collision=collision, 
+                timeout=False, 
+                box_detected=box_detected, 
+                current_time=current_time, 
+                box_moved=box_moved, 
+                distance_to_box=distance_to_box
+            )
+
+        if distance_to_box > MAX_DISTANCE_FROM_BOX:
             done = True
 
-        robot_state = [distance, theta, action[0], action[1]]
-        state = np.append(laser_state, robot_state)
-        reward = self.get_reward(target, collision, action, min_laser)
+        if reached_goal:
+            done = True
 
-        return state, reward, done, target
+        return state, reward, done, reached_goal
+
+    def get_reward(self, target, collision, timeout, box_detected, current_time, box_moved, distance_to_box):
+        reward = 0.0
+
+        if target:
+            self.get_logger().info("Reward: Target reached +1000 points!")
+            reward = 1000.0
+        elif timeout:
+            self.get_logger().info("Penalty: Timeout occurred -500 points")
+            reward = -500.0
+        elif collision and box_moved:
+            self.get_logger().info("Reward: Box contact +200 points")
+            reward = 200.0
+        elif box_detected and (current_time - self.last_box_detection_time) > self.box_detection_cooldown:
+            self.get_logger().info("Reward: Box detected +20 points")
+            self.last_box_detection_time = current_time
+            reward = 20.0
+        else:
+            reward += max(0, (2.0 - distance_to_box) * 5)  # Reduced scaling factor
+
+        return reward
 
     def reset(self):
+        global last_odom, velodyne_data
+        last_odom = None
+        velodyne_data = np.ones(self.environment_dim) * 10  # Initialize with correct size
+        self.timeout_start_time = time.time()  # Reset the timeout timer at reset
+        self.collision = False  # Reset the collision flag
 
-        # Resets the state of the environment and returns an initial observation.
         while not self.reset_proxy.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('reset : service not available, waiting again...')
-
+            self.get_logger().info('/reset_world service not available, waiting again...')
         try:
-            self.reset_proxy.call_async(Empty.Request())
-        except rclpy.ServiceException as e:
-            print("/gazebo/reset_simulation service call failed")
+            self.reset_proxy.call_async(self.req)
+        except rclpy.ServiceException as exc:
+            self.get_logger().error(f'Service call failed: {exc}')
 
-        angle = np.random.uniform(-np.pi, np.pi)
-        quaternion = Quaternion.from_euler(0.0, 0.0, angle)
-        object_state = self.set_self_state
+        # Ensure the initial positions and orientations are set according to the world file
+        self.box_state.pose.position.x = 3.0
+        self.box_state.pose.position.y = 0.0
+        self.box_state.pose.position.z = 0.25
 
-        x = 10
-        y = 10
-        position_ok = False
-        while not position_ok:
-            x = np.random.uniform(-4.5, 4.5)
-            y = np.random.uniform(-4.5, 4.5)
-            position_ok = check_pos(x, y)
-        object_state.pose.position.x = x
-        object_state.pose.position.y = y
-        # object_state.pose.position.z = 0.
-        object_state.pose.orientation.x = quaternion.x
-        object_state.pose.orientation.y = quaternion.y
-        object_state.pose.orientation.z = quaternion.z
-        object_state.pose.orientation.w = quaternion.w
-        self.set_state.publish(object_state)
+        self.set_state.publish(self.box_state)
 
-        self.odom_x = object_state.pose.position.x
-        self.odom_y = object_state.pose.position.y
+        self.set_self_state.pose.position.x = 0.0
+        self.set_self_state.pose.position.y = 0.0
+        self.set_self_state.pose.position.z = 0.01
+        self.set_self_state.pose.orientation.x = 0.0
+        self.set_self_state.pose.orientation.y = 0.0
+        self.set_self_state.pose.orientation.z = 0.0
+        self.set_self_state.pose.orientation.w = 1.0
 
-        # set a random goal in empty space in environment
-        self.change_goal()
-        # randomly scatter boxes in the environment
-        self.random_box()
-        self.publish_markers([0.0, 0.0])
+        self.set_state.publish(self.set_self_state)
 
         while not self.unpause.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('service not available, waiting again...')
-
         try:
-            self.unpause.call_async(Empty.Request())
-        except:
-            print("/gazebo/unpause_physics service call failed")
+            self.unpause.call_async(self.req)
+        except rclpy.ServiceException as exc:
+            self.get_logger().error(f'Service call failed: {exc}')
 
         time.sleep(TIME_DELTA)
+        start_time = time.time()
+        timeout = 30
+        while last_odom is None and (time.time() - start_time) < timeout:
+            rclpy.spin_once(self, timeout_sec=0.1)
 
-        while not self.pause.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('service not available, waiting again...')
+        if last_odom is None:
+            self.get_logger().error("Timeout: Odometry data not received after reset.")
+            return np.zeros(self.environment_dim + 7), 0, True, False
 
-        try:
-            self.pause.call_async(Empty.Request())
-        except:
-            print("/gazebo/pause_physics service call failed")
+        laser_state = velodyne_data[:self.environment_dim]
+        box_x = self.box_state.pose.position.x
+        box_y = self.box_state.pose.position.y
 
-        v_state = []
-        v_state[:] = velodyne_data[:]
-        laser_state = [v_state]
+        distance_to_goal = np.linalg.norm([box_x - self.goal_x, box_y - self.goal_y])
+        angle = 0  # Reset the robot's orientation to 0
 
-        distance = np.linalg.norm(
-            [self.odom_x - self.goal_x, self.odom_y - self.goal_y]
-        )
+        robot_state = [
+            distance_to_goal,
+            angle,
+            0.0,  # Reset distance to box
+            0.0,  # Reset x difference to box
+            0.0,  # Reset y difference to box
+            0.0,  # Reset linear action
+            0.0   # Reset angular action
+        ]
 
-        skew_x = self.goal_x - self.odom_x
-        skew_y = self.goal_y - self.odom_y
+        state = np.concatenate((laser_state, robot_state))
 
-        dot = skew_x * 1 + skew_y * 0
-        mag1 = math.sqrt(math.pow(skew_x, 2) + math.pow(skew_y, 2))
-        mag2 = math.sqrt(math.pow(1, 2) + math.pow(0, 2))
-        beta = math.acos(dot / (mag1 * mag2))
-
-        if skew_y < 0:
-            if skew_x < 0:
-                beta = -beta
-            else:
-                beta = 0 - beta
-        theta = beta - angle
-
-        if theta > np.pi:
-            theta = np.pi - theta
-            theta = -np.pi - theta
-        if theta < -np.pi:
-            theta = -np.pi - theta
-            theta = np.pi - theta
-
-        robot_state = [distance, theta, 0.0, 0.0]
-        state = np.append(laser_state, robot_state)
         return state
 
-    def change_goal(self):
-        # Place a new goal and check if its location is not on one of the obstacles
-        if self.upper < 10:
-            self.upper += 0.004
-        if self.lower > -10:
-            self.lower -= 0.004
+    def call_service(self, service):
+        while not service.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info('service not available, waiting again...')
+        try:
+            future = service.call_async(Empty.Request())
+            rclpy.spin_until_future_complete(self, future)
+        except rclpy.ServiceException as e:
+            self.get_logger().error(f"Service call failed: {e}")
 
-        goal_ok = False
-
-        while not goal_ok:
-            self.goal_x = self.odom_x + random.uniform(self.upper, self.lower)
-            self.goal_y = self.odom_y + random.uniform(self.upper, self.lower)
-            goal_ok = check_pos(self.goal_x, self.goal_y)
-    
-
-    def random_box(self):
-        # Randomly change the location of the boxes in the environment on each reset to randomize the training
-        # environment
-        for i in range(4):
-            name = "cardboard_box_" + str(i)
-
-            x = 0
-            y = 0
-            box_ok = False
-            while not box_ok:
-                x = np.random.uniform(-6, 6)
-                y = np.random.uniform(-6, 6)
-                box_ok = check_pos(x, y)
-                distance_to_robot = np.linalg.norm([x - self.odom_x, y - self.odom_y])
-                distance_to_goal = np.linalg.norm([x - self.goal_x, y - self.goal_y])
-                if distance_to_robot < 1.5 or distance_to_goal < 1.5:
-                    box_ok = False
-            box_state = ModelState()
-            box_state.model_name = name
-            box_state.pose.position.x = x
-            box_state.pose.position.y = y
-            box_state.pose.position.z = 0.0
-            box_state.pose.orientation.x = 0.0
-            box_state.pose.orientation.y = 0.0
-            box_state.pose.orientation.z = 0.0
-            box_state.pose.orientation.w = 1.0
-            self.set_state.publish(box_state)
-
-    def publish_markers(self, action):
+    def publish_goal_marker(self):
         # Publish visual data in Rviz
         markerArray = MarkerArray()
         marker = Marker()
@@ -369,176 +386,90 @@ class GazeboEnv(Node):
 
         self.publisher.publish(markerArray)
 
-        markerArray2 = MarkerArray()
-        marker2 = Marker()
-        marker2.header.frame_id = "odom"
-        marker2.type = marker.CUBE
-        marker2.action = marker.ADD
-        marker2.scale.x = float(abs(action[0]))
-        marker2.scale.y = 0.1
-        marker2.scale.z = 0.01
-        marker2.color.a = 1.0
-        marker2.color.r = 1.0
-        marker2.color.g = 0.0
-        marker2.color.b = 0.0
-        marker2.pose.orientation.w = 1.0
-        marker2.pose.position.x = 5.0
-        marker2.pose.position.y = 0.0
-        marker2.pose.position.z = 0.0
-
-        markerArray2.markers.append(marker2)
-        self.publisher2.publish(markerArray2)
-
-        markerArray3 = MarkerArray()
-        marker3 = Marker()
-        marker3.header.frame_id = "odom"
-        marker3.type = marker.CUBE
-        marker3.action = marker.ADD
-        marker3.scale.x = float(abs(action[1]))
-        marker3.scale.y = 0.1
-        marker3.scale.z = 0.01
-        marker3.color.a = 1.0
-        marker3.color.r = 1.0
-        marker3.color.g = 0.0
-        marker3.color.b = 0.0
-        marker3.pose.orientation.w = 1.0
-        marker3.pose.position.x = 5.0
-        marker3.pose.position.y = 0.2
-        marker3.pose.position.z = 0.0
-
-        markerArray3.markers.append(marker3)
-        self.publisher3.publish(markerArray3)
-
-    @staticmethod
-    def observe_collision(laser_data):
-        # Detect a collision from laser data
-        min_laser = min(laser_data)
-        if min_laser < COLLISION_DIST:
-            env.get_logger().info("Collision is detected!")
-            return True, True, min_laser
-        return False, False, min_laser
-
-    @staticmethod
-    def get_reward(target, collision, action, min_laser):
-        if target:
-            env.get_logger().info("reward 100")
-            return 100.0
-        elif collision:
-            env.get_logger().info("reward -100")
-            return -100.0
-        else:
-            r3 = lambda x: 1 - x if x < 1 else 0.0
-            return action[0] / 2 - abs(action[1]) / 2 - r3(min_laser) / 2
-
-class Odom_subscriber(Node):
-
+class OdomSubscriber(Node):
     def __init__(self):
         super().__init__('odom_subscriber')
-        self.subscription = self.create_subscription(
-            Odometry,
-            '/odom',
-            self.odom_callback,
-            10)
-        self.subscription
+        self.subscription = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
 
     def odom_callback(self, od_data):
         global last_odom
         last_odom = od_data
 
-class Velodyne_subscriber(Node):
-
-    def __init__(self):
+class VelodyneSubscriber(Node):
+    def __init__(self, environment_dim):
         super().__init__('velodyne_subscriber')
-        self.subscription = self.create_subscription(
-            PointCloud2,
-            "/velodyne_points",
-            self.velodyne_callback,
-            10)
-        self.subscription
+        self.environment_dim = environment_dim
+        self.subscription = self.create_subscription(PointCloud2, "/velodyne_points", self.velodyne_callback, 10)
 
-        self.gaps = [[-np.pi / 2 - 0.03, -np.pi / 2 + np.pi / environment_dim]]
-        for m in range(environment_dim - 1):
-            self.gaps.append(
-                [self.gaps[m][1], self.gaps[m][1] + np.pi / environment_dim]
-            )
+        self.gaps = [[-np.pi / 2 - 0.03, -np.pi / 2 + np.pi / self.environment_dim]]
+        for m in range(self.environment_dim - 1):
+            self.gaps.append([self.gaps[m][1], self.gaps[m][1] + np.pi / self.environment_dim])
         self.gaps[-1][-1] += 0.03
 
     def velodyne_callback(self, v):
         global velodyne_data
         data = list(pc2.read_points(v, skip_nans=False, field_names=("x", "y", "z")))
-        velodyne_data = np.ones(environment_dim) * 10
+        velodyne_data = np.ones(self.environment_dim) * 10
         for i in range(len(data)):
             if data[i][2] > -0.2:
                 dot = data[i][0] * 1 + data[i][1] * 0
                 mag1 = math.sqrt(math.pow(data[i][0], 2) + math.pow(data[i][1], 2))
-                mag2 = math.sqrt(math.pow(1, 2) + math.pow(0, 2))
-                beta = math.acos(dot / (mag1 * mag2)) * np.sign(data[i][1])
+                value = dot / mag1
+                value = np.clip(value, -1.0, 1.0)
+                beta = math.acos(value) * np.sign(data[i][1])
                 dist = math.sqrt(data[i][0] ** 2 + data[i][1] ** 2 + data[i][2] ** 2)
-
                 for j in range(len(self.gaps)):
                     if self.gaps[j][0] <= beta < self.gaps[j][1]:
                         velodyne_data[j] = min(velodyne_data[j], dist)
                         break
 
 if __name__ == '__main__':
-
     rclpy.init(args=None)
 
-    # Set the parameters for the implementation
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # cuda or cpu
-    seed = 0  # Random seed number
-    max_ep = 500  # maximum number of steps per episode
-    file_name = "td3_velodyne"  # name of the file to load the policy from
-    environment_dim = 20
-    robot_dim = 4
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    seed = 0
+    max_ep = 500
+    file_name = "td3_velodyne"
+    model_dir = "/home/tyler/ros2_ws/src/deep-rl-navigation/DRL_robot_navigation_ros2/src/td3/scripts/pytorch_models"  # Update this path to your model directory
+    environment_dim = 75
+    robot_dim = 7
 
     torch.manual_seed(seed)
     np.random.seed(seed)
     state_dim = environment_dim + robot_dim
     action_dim = 2
+    max_action = 1
 
-    # Create the network
-    network = td3(state_dim, action_dim)
+    network = TD3(state_dim, action_dim, max_action)
     try:
-        network.load(file_name, "")
+        network.load(file_name, model_dir)
     except Exception as e:
         raise ValueError(f"Could not load the stored model parameters: {e}")
 
     done = True
     episode_timesteps = 0
 
-    # Create the testing environment
-    env = GazeboEnv()
-    odom_subscriber = Odom_subscriber()
-    velodyne_subscriber = Velodyne_subscriber()
+    env = GazeboEnv(environment_dim)
+    odom_subscriber = OdomSubscriber()
+    velodyne_subscriber = VelodyneSubscriber(environment_dim)
 
     executor = rclpy.executors.MultiThreadedExecutor()
     executor.add_node(odom_subscriber)
     executor.add_node(velodyne_subscriber)
+    executor.add_node(env)
 
     executor_thread = threading.Thread(target=executor.spin, daemon=True)
     executor_thread.start()
     
     rate = odom_subscriber.create_rate(2)
 
-    # Begin the testing loop
     while rclpy.ok():
-
-        # On termination of episode
         if done:
             state = env.reset()
-
-            action = network.get_action(np.array(state))
-            # Update action to fall in range [0,1] for linear velocity and [-1,1] for angular velocity
-            a_in = [(action[0] + 1) / 2, action[1]]
-            next_state, reward, done, target = env.step(a_in)
-            done = 1 if episode_timesteps + 1 == max_ep else int(done)
-
             done = False
             episode_timesteps = 0
         else:
             action = network.get_action(np.array(state))
-            # Update action to fall in range [0,1] for linear velocity and [-1,1] for angular velocity
             a_in = [(action[0] + 1) / 2, action[1]]
             next_state, reward, done, target = env.step(a_in)
             done = 1 if episode_timesteps + 1 == max_ep else int(done)
@@ -547,3 +478,4 @@ if __name__ == '__main__':
             episode_timesteps += 1
 
     rclpy.shutdown()
+    executor_thread.join()
