@@ -5,14 +5,6 @@ Deep Reinforcement Learning for mobile robot navigation in ROS2 Gazebo simulator
 # How To Run
 
 Install Python 3.10, ROS2 Humble, Gazebo 11 on Ubuntu 22.04
-```
-git clone git@github.com:vishweshvhavle/deep-rl-navigation.git
-cd deep-rl-navigation/DRL_robot_navigation_ros2/
-sudo rosdep init
-rosdep install --from-paths src --ignore-src -y
-colcon build
-cd ..
-```
 
 For Training - 
 ```
