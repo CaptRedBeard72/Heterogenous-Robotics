@@ -16,7 +16,4 @@ For Testing -
 ros2 launch td3 test_simulation.launch.py
 ```
 
-# Academic Integrity
-If you are currently enrolled in this course, please refer to IIIT-Delhi's Policy on Academic Integrity before referring to any of the repository contents. This repository contains the work we did as undergrads at IIIT-Delhi in CSE-564 Reinforcement Learning course. We do not encourage plagiarism of any kind.
-
 Main files currently being used and updated: hcr.world, train_velodyn_node.py and train_simulation.launch.py
