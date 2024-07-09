@@ -1,0 +1,729 @@
+<?xml version="1.0" ?>
+<robot name="combined_td_robot">
+
+  <!-- Materials -->
+  <material name="black">
+    <color rgba="0.0 0.0 0.0 1.0"/>
+  </material>
+  <material name="blue">
+    <color rgba="0.0 0.0 0.8 1.0"/>
+  </material>
+  <material name="green">
+    <color rgba="0.0 0.8 0.0 1.0"/>
+  </material>
+  <material name="grey">
+    <color rgba="0.2 0.2 0.2 1.0"/>
+  </material>
+  <material name="orange">
+    <color rgba="1.0 0.4235294117647059 0.0392156862745098 1.0"/>
+  </material>
+  <material name="brown">
+    <color rgba="0.8705882352941177 0.8117647058823529 0.7647058823529411 1.0"/>
+  </material>
+  <material name="red">
+    <color rgba="0.8 0.0 0.0 1.0"/>
+  </material>
+  <material name="white">
+    <color rgba="1.0 1.0 1.0 1.0"/>
+  </material>
+
+  <!-- Root link -->
+  <link name="base_link"/>
+  
+  <!-- LiDAR Robot -->
+  <link name="lidar_base_link"/>
+  <!-- Chassis -->
+  <joint name="lidar_base_link_chassis_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0"/>
+    <parent link="lidar_base_link"/>
+    <child link="lidar_chassis"/>
+  </joint>
+  <link name="lidar_chassis">
+    <visual name="lidar_chassis_visual">
+      <origin rpy="0 0 0" xyz="-0.045 0 0.148"/>
+      <geometry name="pioneer_geom">
+        <mesh filename="package://td3/urdf/meshes/p3dx/chassis.stl"/>
+      </geometry>
+      <material name="ChassisRed">
+        <color rgba="0.851 0.0 0.0 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="-0.045 0 0.148"/>
+      <geometry>
+        <mesh filename="package://td3/urdf/meshes/p3dx/chassis.stl"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="9.0"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.07499997000000001" ixy="0.0" ixz="0.0" iyy="0.12149995139999999" iyz="0.0" izz="0.14789994084"/>
+    </inertial>
+  </link>
+  <gazebo reference="lidar_chassis">
+    <material value="Gazebo/Green"/>
+  </gazebo>
+  <!-- Top -->
+  <joint name="lidar_chassis_top_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="-0.045 0 0.234"/>
+    <parent link="lidar_chassis"/>
+    <child link="lidar_top"/>
+  </joint>
+  <link name="lidar_top">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry name="top_geom">
+        <mesh filename="package://td3/urdf/meshes/p3dx/top.stl"/>
+      </geometry>
+      <material name="TopBlack">
+        <color rgba="0.038 0.038 0.038 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0.0 0 0.0"/>
+      <geometry>
+        <mesh filename="package://td3/urdf/meshes/p3dx/top.stl"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="1.0"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.01204166185" ixy="0.0" ixz="0.0" iyy="0.016510410062499998" iyz="0.0" izz="0.028535405252499996"/>
+    </inertial>
+  </link>
+  <gazebo reference="lidar_top">
+    <material value="Gazebo/Black"/>
+  </gazebo>
+
+  <!-- Hubcaps and Wheels -->
+  <joint name="lidar_right_hub_joint" type="continuous">
+    <origin rpy="0 0 0" xyz="0  0.15 0.09"/>
+    <parent link="lidar_chassis"/>
+    <child link="lidar_right_hub"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+  <link name="lidar_right_hub">
+    <inertial>
+      <mass value="0.01"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.012411765597" ixy="0" ixz="0" iyy="0.015218160428" iyz="0" izz="0.011763977943"/>
+    </inertial>
+    <visual name="base_visual">
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry name="pioneer_geom">
+        <mesh filename="package://td3/urdf/meshes/p3dx/right_hubcap.stl"/>
+      </geometry>
+      <material name="HubcapYellow">
+        <color rgba="1.0 0.811 0.151 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <box size="0.01 0.01 0.01"/>
+      </geometry>
+    </collision>
+  </link>
+  <gazebo reference="lidar_right_hub">
+    <material value="Gazebo/Yellow"/>
+  </gazebo>
+  <joint name="lidar_right_wheel_joint" type="fixed">
+    <axis xyz="0 1 0"/>
+    <origin rpy="0 0 0" xyz="0 0 0"/>
+    <parent link="lidar_right_hub"/>
+    <child link="lidar_right_wheel"/>
+  </joint>
+  <link name="lidar_right_wheel">
+    <inertial>
+      <mass value="0.5"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.012411765597" ixy="0" ixz="0" iyy="0.015218160428" iyz="0" izz="0.011763977943"/>
+    </inertial>
+    <visual name="base_visual">
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry name="pioneer_geom">
+        <mesh filename="package://td3/urdf/meshes/p3dx/right_wheel.stl"/>
+      </geometry>
+      <material name="WheelBlack">
+        <color rgba="0.117 0.117 0.117 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="-1.57079635 0 0" xyz="0 0 0"/>
+      <geometry>
+        <cylinder length="0.01" radius="0.09"/>
+      </geometry>
+    </collision>
+  </link>
+  <gazebo reference="lidar_right_wheel">
+    <material value="Gazebo/Black"/>
+  </gazebo>
+
+  <joint name="lidar_left_hub_joint" type="continuous">
+    <origin rpy="0 0 0" xyz="0 -0.15 0.09"/>
+    <parent link="lidar_chassis"/>
+    <child link="lidar_left_hub"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+  <link name="lidar_left_hub">
+    <inertial>
+      <mass value="0.01"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.012411765597" ixy="0" ixz="0" iyy="0.015218160428" iyz="0" izz="0.011763977943"/>
+    </inertial>
+    <visual name="base_visual">
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry name="pioneer_geom">
+        <mesh filename="package://td3/urdf/meshes/p3dx/left_hubcap.stl"/>
+      </geometry>
+      <material name="HubcapYellow">
+        <color rgba="1.0 0.811 0.151 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <box size="0.01 0.01 0.01"/>
+      </geometry>
+    </collision>
+  </link>
+  <gazebo reference="lidar_left_hub">
+    <material value="Gazebo/Yellow"/>
+  </gazebo>
+  <joint name="lidar_left_wheel_joint" type="fixed">
+    <axis xyz="0 1 0"/>
+    <origin rpy="0 0 0" xyz="0 0 0"/>
+    <parent link="lidar_left_hub"/>
+    <child link="lidar_left_wheel"/>
+  </joint>
+  <link name="lidar_left_wheel">
+    <inertial>
+      <mass value="0.5"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.012411765597" ixy="0" ixz="0" iyy="0.015218160428" iyz="0" izz="0.011763977943"/>
+    </inertial>
+    <visual name="base_visual">
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry name="pioneer_geom">
+        <mesh filename="package://td3/urdf/meshes/p3dx/left_wheel.stl"/>
+      </geometry>
+      <material name="WheelBlack">
+        <color rgba="0.117 0.117 0.117 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="-1.57079635 0 0" xyz="0 0 0"/>
+      <geometry>
+        <cylinder length="0.01" radius="0.09"/>
+      </geometry>
+    </collision>
+  </link>
+  <gazebo reference="lidar_left_wheel">
+    <material value="Gazebo/Black"/>
+  </gazebo>
+
+  <!-- Center Wheel -->
+  <joint name="lidar_chassis_swivel_joint" type="continuous">
+    <origin rpy="0 0 0" xyz="-0.185 0 0.055"/>
+    <axis xyz="0 0 1"/>
+    <parent link="lidar_chassis"/>
+    <child link="lidar_swivel"/>
+  </joint>
+  <link name="lidar_swivel">
+    <inertial>
+      <mass value="0.1"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/>
+    </inertial>
+    <visual name="base_visual">
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry name="pioneer_geom">
+        <mesh filename="package://td3/urdf/meshes/p3dx/swivel.stl"/>
+      </geometry>
+      <material name="swivel">
+        <color rgba="0.5 0.5 0.5 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <box size="0.01 0.01 0.01"/>
+      </geometry>
+    </collision>
+  </link>
+  <gazebo reference="lidar_swivel">
+    <material value="Gazebo/Grey"/>
+  </gazebo>
+
+  <joint name="lidar_swivel_wheel_joint" type="continuous">
+    <origin rpy="0 0 0" xyz="-0.026 0 -0.016"/>
+    <axis xyz="0 1 0"/>
+    <parent link="lidar_swivel"/>
+    <child link="lidar_center_wheel"/>
+  </joint>
+  <link name="lidar_center_wheel">
+    <inertial>
+      <mass value="0.1"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.012411765597" ixy="-0.000711733678" ixz="0.00050272983" iyy="0.015218160428" iyz="-0.000004273467" izz="0.011763977943"/>
+    </inertial>
+    <visual name="base_visual">
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry name="pioneer_geom">
+        <mesh filename="package://td3/urdf/meshes/p3dx/center_wheel.stl"/>
+      </geometry>
+      <material name="WheelBlack">
+        <color rgba="0.117 0.117 0.117 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="-1.57079635 0 0" xyz="0 0 0"/>
+      <geometry>
+        <cylinder length="0.01" radius="0.0375"/>
+      </geometry>
+    </collision>
+  </link>
+  <gazebo reference="lidar_center_wheel">
+    <material value="Gazebo/Black"/>
+  </gazebo>
+
+  <joint name="lidar_wheel_hubcap_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="-0.0035 0 -0.001"/>
+    <parent link="lidar_center_wheel"/>
+    <child link="lidar_center_hubcap"/>
+  </joint>
+  <link name="lidar_center_hubcap">
+    <inertial>
+      <mass value="0.01"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.012411765597" ixy="-0.000711733678" ixz="0.00050272983" iyy="0.015218160428" iyz="-0.000004273467" izz="0.011763977943"/>
+    </inertial>
+    <visual name="base_visual">
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry name="pioneer_geom">
+        <mesh filename="package://td3/urdf/meshes/p3dx/center_hubcap.stl"/>
+      </geometry>
+      <material name="swivel">
+        <color rgba="0.5 0.5 0.5 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <box size="0.01 0.01 0.01"/>
+      </geometry>
+    </collision>
+  </link>
+  <gazebo reference="lidar_center_hubcap">
+    <material value="Gazebo/Grey"/>
+  </gazebo>
+
+  <!-- LiDAR Sensor -->
+  <joint name="lidar_chassis_velodyne_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0.125 0 0.25"/>
+    <parent link="lidar_chassis"/>
+    <child link="lidar_velodyne_base_link"/>
+  </joint>
+  <link name="lidar_velodyne_base_link">
+    <inertial>
+      <mass value="0.83"/>
+      <origin xyz="0 0 0.03585"/>
+      <inertia ixx="0.000908059425" ixy="0" ixz="0" iyy="0.000908059425" iyz="0" izz="0.0011049624"/>
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="package://velodyne_description/meshes/VLP16_base_1.dae"/>
+      </geometry>
+    </visual>
+    <visual>
+      <geometry>
+        <mesh filename="package://velodyne_description/meshes/VLP16_base_2.dae"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0.03585"/>
+      <geometry>
+        <cylinder length="0.0717" radius="0.0516"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="lidar_velodyne_base_scan_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0.0377"/>
+    <parent link="lidar_velodyne_base_link"/>
+    <child link="lidar_velodyne"/>
+  </joint>
+  <link name="lidar_velodyne">
+    <inertial>
+      <mass value="0.01"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="1e-7" ixy="0" ixz="0" iyy="1e-7" iyz="0" izz="1e-7"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 -0.0377"/>
+      <geometry>
+        <mesh filename="package://velodyne_description/meshes/VLP16_scan.dae"/>
+      </geometry>
+    </visual>
+  </link>
+  <joint name="lidar_base_joint" type="fixed">
+    <origin xyz="0 0 0"/>
+    <parent link="base_link"/>
+    <child link="lidar_base_link"/>
+  </joint>
+
+  <!-- Camera Robot -->
+  <link name="camera_base_link"/>
+  <!-- Chassis -->
+  <joint name="camera_base_link_chassis_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0"/>
+    <parent link="camera_base_link"/>
+    <child link="camera_chassis"/>
+  </joint>
+  <link name="camera_chassis">
+    <visual name="camera_chassis_visual">
+      <origin rpy="0 0 0" xyz="-0.045 0 0.148"/>
+      <geometry name="pioneer_geom">
+        <mesh filename="package://td3/urdf/meshes/p3dx/chassis.stl"/>
+      </geometry>
+      <material name="ChassisRed">
+        <color rgba="0.851 0.0 0.0 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="-0.045 0 0.148"/>
+      <geometry>
+        <mesh filename="package://td3/urdf/meshes/p3dx/chassis.stl"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="9.0"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.07499997000000001" ixy="0.0" ixz="0.0" iyy="0.12149995139999999" iyz="0.0" izz="0.14789994084"/>
+    </inertial>
+  </link>
+  <gazebo reference="camera_chassis">
+    <material value="Gazebo/Green"/>
+  </gazebo>
+  <!-- Top -->
+  <joint name="camera_chassis_top_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="-0.045 0 0.234"/>
+    <parent link="camera_chassis"/>
+    <child link="camera_top"/>
+  </joint>
+  <link name="camera_top">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry name="top_geom">
+        <mesh filename="package://td3/urdf/meshes/p3dx/top.stl"/>
+      </geometry>
+      <material name="TopBlack">
+        <color rgba="0.038 0.038 0.038 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0.0 0 0.0"/>
+      <geometry>
+        <mesh filename="package://td3/urdf/meshes/p3dx/top.stl"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="1.0"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.01204166185" ixy="0.0" ixz="0.0" iyy="0.016510410062499998" iyz="0.0" izz="0.028535405252499996"/>
+    </inertial>
+  </link>
+  <gazebo reference="camera_top">
+    <material value="Gazebo/Black"/>
+  </gazebo>
+
+  <!-- Hubcaps and Wheels -->
+  <joint name="camera_right_hub_joint" type="continuous">
+    <origin rpy="0 0 0" xyz="0  0.15 0.09"/>
+    <parent link="camera_chassis"/>
+    <child link="camera_right_hub"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+  <link name="camera_right_hub">
+    <inertial>
+      <mass value="0.01"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.012411765597" ixy="0" ixz="0" iyy="0.015218160428" iyz="0" izz="0.011763977943"/>
+    </inertial>
+    <visual name="base_visual">
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry name="pioneer_geom">
+        <mesh filename="package://td3/urdf/meshes/p3dx/right_hubcap.stl"/>
+      </geometry>
+      <material name="HubcapYellow">
+        <color rgba="1.0 0.811 0.151 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <box size="0.01 0.01 0.01"/>
+      </geometry>
+    </collision>
+  </link>
+  <gazebo reference="camera_right_hub">
+    <material value="Gazebo/Yellow"/>
+  </gazebo>
+  <joint name="camera_right_wheel_joint" type="fixed">
+    <axis xyz="0 1 0"/>
+    <origin rpy="0 0 0" xyz="0 0 0"/>
+    <parent link="camera_right_hub"/>
+    <child link="camera_right_wheel"/>
+  </joint>
+  <link name="camera_right_wheel">
+    <inertial>
+      <mass value="0.5"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.012411765597" ixy="0" ixz="0" iyy="0.015218160428" iyz="0" izz="0.011763977943"/>
+    </inertial>
+    <visual name="base_visual">
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry name="pioneer_geom">
+        <mesh filename="package://td3/urdf/meshes/p3dx/right_wheel.stl"/>
+      </geometry>
+      <material name="WheelBlack">
+        <color rgba="0.117 0.117 0.117 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="-1.57079635 0 0" xyz="0 0 0"/>
+      <geometry>
+        <cylinder length="0.01" radius="0.09"/>
+      </geometry>
+    </collision>
+  </link>
+  <gazebo reference="camera_right_wheel">
+    <material value="Gazebo/Black"/>
+  </gazebo>
+
+  <joint name="camera_left_hub_joint" type="continuous">
+    <origin rpy="0 0 0" xyz="0 -0.15 0.09"/>
+    <parent link="camera_chassis"/>
+    <child link="camera_left_hub"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+  <link name="camera_left_hub">
+    <inertial>
+      <mass value="0.01"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.012411765597" ixy="0" ixz="0" iyy="0.015218160428" iyz="0" izz="0.011763977943"/>
+    </inertial>
+    <visual name="base_visual">
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry name="pioneer_geom">
+        <mesh filename="package://td3/urdf/meshes/p3dx/left_hubcap.stl"/>
+      </geometry>
+      <material name="HubcapYellow">
+        <color rgba="1.0 0.811 0.151 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <box size="0.01 0.01 0.01"/>
+      </geometry>
+    </collision>
+  </link>
+  <gazebo reference="camera_left_hub">
+    <material value="Gazebo/Yellow"/>
+  </gazebo>
+  <joint name="camera_left_wheel_joint" type="fixed">
+    <axis xyz="0 1 0"/>
+    <origin rpy="0 0 0" xyz="0 0 0"/>
+    <parent link="camera_left_hub"/>
+    <child link="camera_left_wheel"/>
+  </joint>
+  <link name="camera_left_wheel">
+    <inertial>
+      <mass value="0.5"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.012411765597" ixy="0" ixz="0" iyy="0.015218160428" iyz="0" izz="0.011763977943"/>
+    </inertial>
+    <visual name="base_visual">
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry name="pioneer_geom">
+        <mesh filename="package://td3/urdf/meshes/p3dx/left_wheel.stl"/>
+      </geometry>
+      <material name="WheelBlack">
+        <color rgba="0.117 0.117 0.117 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="-1.57079635 0 0" xyz="0 0 0"/>
+      <geometry>
+        <cylinder length="0.01" radius="0.09"/>
+      </geometry>
+    </collision>
+  </link>
+  <gazebo reference="camera_left_wheel">
+    <material value="Gazebo/Black"/>
+  </gazebo>
+
+  <!-- Center Wheel -->
+  <joint name="camera_chassis_swivel_joint" type="continuous">
+    <origin rpy="0 0 0" xyz="-0.185 0 0.055"/>
+    <axis xyz="0 0 1"/>
+    <parent link="camera_chassis"/>
+    <child link="camera_swivel"/>
+  </joint>
+  <link name="camera_swivel">
+    <inertial>
+      <mass value="0.1"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/>
+    </inertial>
+    <visual name="base_visual">
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry name="pioneer_geom">
+        <mesh filename="package://td3/urdf/meshes/p3dx/swivel.stl"/>
+      </geometry>
+      <material name="swivel">
+        <color rgba="0.5 0.5 0.5 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <box size="0.01 0.01 0.01"/>
+      </geometry>
+    </collision>
+  </link>
+  <gazebo reference="camera_swivel">
+    <material value="Gazebo/Grey"/>
+  </gazebo>
+
+  <joint name="camera_swivel_wheel_joint" type="continuous">
+    <origin rpy="0 0 0" xyz="-0.026 0 -0.016"/>
+    <axis xyz="0 1 0"/>
+    <parent link="camera_swivel"/>
+    <child link="camera_center_wheel"/>
+  </joint>
+  <link name="camera_center_wheel">
+    <inertial>
+      <mass value="0.1"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.012411765597" ixy="-0.000711733678" ixz="0.00050272983" iyy="0.015218160428" iyz="-0.000004273467" izz="0.011763977943"/>
+    </inertial>
+    <visual name="base_visual">
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry name="pioneer_geom">
+        <mesh filename="package://td3/urdf/meshes/p3dx/center_wheel.stl"/>
+      </geometry>
+      <material name="WheelBlack">
+        <color rgba="0.117 0.117 0.117 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="-1.57079635 0 0" xyz="0 0 0"/>
+      <geometry>
+        <cylinder length="0.01" radius="0.0375"/>
+      </geometry>
+    </collision>
+  </link>
+  <gazebo reference="camera_center_wheel">
+    <material value="Gazebo/Black"/>
+  </gazebo>
+
+  <joint name="camera_wheel_hubcap_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="-0.0035 0 -0.001"/>
+    <parent link="camera_center_wheel"/>
+    <child link="camera_center_hubcap"/>
+  </joint>
+  <link name="camera_center_hubcap">
+    <inertial>
+      <mass value="0.01"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.012411765597" ixy="-0.000711733678" ixz="0.00050272983" iyy="0.015218160428" iyz="-0.000004273467" izz="0.011763977943"/>
+    </inertial>
+    <visual name="base_visual">
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry name="pioneer_geom">
+        <mesh filename="package://td3/urdf/meshes/p3dx/center_hubcap.stl"/>
+      </geometry>
+      <material name="swivel">
+        <color rgba="0.5 0.5 0.5 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <box size="0.01 0.01 0.01"/>
+      </geometry>
+    </collision>
+  </link>
+  <gazebo reference="camera_center_hubcap">
+    <material value="Gazebo/Grey"/>
+  </gazebo>
+
+  <!-- Camera Sensors -->
+  <joint name="camera_chassis_front_camera_joint" type="fixed">
+    <axis xyz="0 0 1"/>
+    <origin rpy="0 0 0" xyz="0.025 0 0.32"/>
+    <parent link="camera_chassis"/>
+    <child link="camera_front_camera"/>
+  </joint>
+  <link name="camera_front_camera">
+    <inertial>
+      <mass value="1e-5"/>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 1.57 0" xyz="0 0 0"/>
+      <geometry>
+        <cylinder length="0.1" radius="0.03"/>
+      </geometry>
+      <material name="grey"/>
+    </visual>
+    <collision>
+      <origin rpy="0 1.57 0" xyz="0 0 0"/>
+      <geometry>
+        <cylinder length="0.1" radius="0.03"/>
+      </geometry>
+    </collision>
+  </link>
+  <gazebo reference="camera_front_camera">
+    <material value="Gazebo/Grey"/>
+  </gazebo>
+
+  <joint name="camera_chassis_cameraD_joint" type="fixed">
+    <axis xyz="0 0 1"/>
+    <origin rpy="0 0 0" xyz="0.025 0 0.32"/>
+    <parent link="camera_chassis"/>
+    <child link="camera_cameraD"/>
+  </joint>
+  <link name="camera_cameraD">
+    <inertial>
+      <mass value="1e-5"/>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 1.57 0" xyz="0 0 0"/>
+      <geometry>
+        <cylinder length="0.1" radius="0.03"/>
+      </geometry>
+      <material name="grey"/>
+    </visual>
+    <collision>
+      <origin rpy="0 1.57 0" xyz="0 0 0"/>
+      <geometry>
+        <cylinder length="0.1" radius="0.03"/>
+      </geometry>
+    </collision>
+  </link>
+  <gazebo reference="camera_cameraD">
+    <material value="Gazebo/Grey"/>
+  </gazebo>
+  
+  <joint name="camera_base_joint" type="fixed">
+    <origin xyz="0 0 0"/>
+    <parent link="base_link"/>
+    <child link="camera_base_link"/>
+  </joint>
+
+</robot>
