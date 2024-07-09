@@ -22,11 +22,13 @@ from std_srvs.srv import Empty
 from visualization_msgs.msg import Marker, MarkerArray
 import point_cloud2 as pc2
 
+# Parameters
 GOAL_REACHED_DIST = 0.5
-COLLISION_DIST = 0.2
-TIME_DELTA = 0.2
-MAX_DISTANCE_FROM_BOX = 5.0  # Maximum allowed distance from the box
+COLLISION_DIST = 0.47
+TIME_DELTA = 0.1
+MAX_DISTANCE_FROM_BOX = 4.0  # Maximum allowed distance from the box
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 last_odom = None
 environment_dim = 75
 velodyne_data = np.ones(environment_dim) * 10
@@ -62,9 +64,9 @@ class TD3:
         print(f"Loading actor model from: {actor_path}")
         self.actor.load_state_dict(torch.load(actor_path))
 
-def is_box_detected(velodyne_data, detection_range=2.0):
+def is_box_detected(velodyne_data, detection_range=3.0):
     detection_threshold = sum(velodyne_data < detection_range)
-    detected = detection_threshold > (0.1 * len(velodyne_data))  # Adjust the threshold as needed
+    detected = detection_threshold > (0.05 * len(velodyne_data))  # Adjust the threshold as needed
     return detected
 
 class GazeboEnv(Node):
@@ -75,11 +77,11 @@ class GazeboEnv(Node):
         self.odom_y = 0
         self.goal_x = 3.5
         self.goal_y = 3.5
-        self.collision = False  # Simple collision flag
+        self.collision = False
         self.box_detected_flag = False
         self.previous_box_position = None
-        self.timeout_start_time = time.time()  # Initialize the timeout start time
-        self.timeout_duration = 120  # Timeout duration in seconds
+        self.timeout_start_time = time.time()
+        self.timeout_duration = 120
 
         self.set_self_state = ModelState()
         self.set_self_state.model_name = "r1"
@@ -104,19 +106,21 @@ class GazeboEnv(Node):
 
         self.publisher = self.create_publisher(MarkerArray, "goal_point", 3)
 
-        self.model_states_subscriber = self.create_subscription(
-            ModelStates,
-            "/gazebo/model_states",
-            self.model_states_callback,
-            10
-        )
+        self.model_states_subscriber = self.create_subscription(ModelStates, "/gazebo/model_states", self.model_states_callback, 10)
 
         self.start_time = None
         self.last_box_detection_time = 0
         self.box_detection_cooldown = 5
         self.timeout_occurred = False
 
-        self.create_timer(1.0, self.publish_goal_marker)  # Publish goal marker every 1 second
+        self.create_timer(1.0, self.publish_goal_marker)
+
+        # Add logger for environment dimension
+        self.get_logger().info(f"Environment dimension: {self.environment_dim}")
+
+        # Add logger for state dimension
+        state_dim = self.environment_dim + 7  # 7 is the robot_dim
+        self.get_logger().info(f"State dimension: {state_dim}")
 
     def model_states_callback(self, msg):
         try:
@@ -144,6 +148,7 @@ class GazeboEnv(Node):
             self.get_logger().info("Box touched!")
             return True, min_laser
         return False, min_laser
+
 
     def step(self, action):
         global last_odom, velodyne_data
@@ -178,7 +183,6 @@ class GazeboEnv(Node):
             box_y = self.box_state.pose.position.y
             direction_to_goal = np.arctan2(self.goal_y - box_y, self.goal_x - box_x)
 
-            # Normalize the angle difference to the range [-pi, pi]
             angle_diff = direction_to_goal - angle
             while angle_diff > np.pi:
                 angle_diff -= 2 * np.pi
@@ -186,8 +190,8 @@ class GazeboEnv(Node):
                 angle_diff += 2 * np.pi
 
             vel_cmd = Twist()
-            vel_cmd.linear.x = 0.5  # Move forward with constant speed
-            vel_cmd.angular.z = 1 * -angle_diff  # Adjust orientation towards the goal
+            vel_cmd.linear.x = 0.7  # Move forward with constant speed
+            vel_cmd.angular.z = 1.0 * -angle_diff  # Tighter turn towards the goal
             self.vel_pub.publish(vel_cmd)
         elif box_detected:
             self.box_detected_flag = True
@@ -195,7 +199,6 @@ class GazeboEnv(Node):
             box_y = self.box_state.pose.position.y
             direction_to_box = np.arctan2(box_y - self.odom_y, box_x - self.odom_x)
 
-            # Normalize the angle difference to the range [-pi, pi]
             angle_diff = direction_to_box - angle
             while angle_diff > np.pi:
                 angle_diff -= 2 * np.pi
@@ -203,14 +206,14 @@ class GazeboEnv(Node):
                 angle_diff += 2 * np.pi
 
             vel_cmd = Twist()
-            vel_cmd.linear.x = 0.5  # Move forward with constant speed
-            vel_cmd.angular.z = 1 * -angle_diff  # Adjust orientation towards the box
+            vel_cmd.linear.x = 0.7  # Move forward with constant speed
+            vel_cmd.angular.z = 2 * -angle_diff  # Tighter turn towards the box
             self.vel_pub.publish(vel_cmd)
         else:
             self.box_detected_flag = False
             vel_cmd = Twist()
             vel_cmd.linear.x = float(action[0])
-            vel_cmd.angular.z = float(action[1])
+            vel_cmd.angular.z = float(action[1]) * 1.5
             self.vel_pub.publish(vel_cmd)
 
         self.call_service(self.unpause)
@@ -244,7 +247,15 @@ class GazeboEnv(Node):
         if current_time - self.timeout_start_time > self.timeout_duration:
             self.get_logger().info("Timeout: The robot did not achieve the goal in the given time.")
             done = True
-            reward = -500.0
+            reward = self.get_reward(
+                reached_goal, 
+                collision=collision, 
+                timeout=True, 
+                box_detected=box_detected, 
+                current_time=current_time, 
+                box_moved=box_moved, 
+                distance_to_box=distance_to_box
+            )
         else:
             reward = self.get_reward(
                 reached_goal, 
@@ -257,7 +268,9 @@ class GazeboEnv(Node):
             )
 
         if distance_to_box > MAX_DISTANCE_FROM_BOX:
+            self.get_logger().info("Penalty: Robot too far from box -300 points.")
             done = True
+            reward -= 300.0
 
         if reached_goal:
             done = True
@@ -281,7 +294,7 @@ class GazeboEnv(Node):
             self.last_box_detection_time = current_time
             reward = 20.0
         else:
-            reward += max(0, (2.0 - distance_to_box) * 5)  # Reduced scaling factor
+            reward += max(0, (2.0 - distance_to_box) * 5)
 
         return reward
 
