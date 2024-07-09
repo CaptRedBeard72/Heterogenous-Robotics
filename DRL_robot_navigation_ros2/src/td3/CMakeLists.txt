@@ -39,17 +39,25 @@ install(
   PROGRAMS
     scripts/replay_buffer.py
     scripts/test_velodyne_node.py
+    scripts/combined_test_velodyne_node.py
     scripts/train_velodyne_node.py
     scripts/point_cloud2.py
-    scripts/velodyne_box_test_node.py
+    scripts/vint_train_node.py
+    scripts/vint_test_node.py 
+    scripts/combined_vint_test_node.py 
+    scripts/combined_test_node.py
     launch/multi_robot_scenario.launch.py
     launch/robot_state_publisher.launch.py
+    launch/robot_state_publisher_combined.launch.py
     launch/train_simulation.launch.py
     launch/test_simulation.launch.py
     launch/pioneer3dx.rviz
-    launch/test.launch.py
-    launch/model_state_checker.launch.py
+    launch/pioneer3dx_combined.rviz
+    launch/train_vint_simulation.launch.py
+    launch/test_vint_simulation.launch.py
+    launch/test_combined_simulation.launch.py 
   DESTINATION lib/${PROJECT_NAME}
 )
 
 ament_package()
+
