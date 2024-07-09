@@ -46,7 +46,6 @@ install(
     scripts/vint_test_node.py 
     scripts/combined_vint_test_node.py 
     scripts/combined_test_node.py
-    launch/multi_robot_scenario.launch.py
     launch/robot_state_publisher.launch.py
     launch/robot_state_publisher_combined.launch.py
     launch/train_simulation.launch.py
