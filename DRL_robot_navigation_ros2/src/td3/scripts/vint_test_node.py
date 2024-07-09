@@ -483,7 +483,7 @@ if __name__ == '__main__':
     seed = 0
     max_ep = 500
     file_name = "td3_camera"  # Use the LiDAR model actor data
-    model_dir = "/home/tyler/ros2_ws/src/deep-rl-navigation/DRL_robot_navigation_ros2/src/td3/scripts/pytorch_models"  # Update this path to your model directory
+    model_dir = "/home/tyler/ros2_ws/src/Heterogenous-Robotics/DRL_robot_navigation_ros2/src/td3/scripts/pytorch_models"  # Update this path to your model directory
     environment_dim = 999
     robot_dim = 8
 

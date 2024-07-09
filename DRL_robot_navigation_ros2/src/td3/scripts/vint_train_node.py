@@ -112,7 +112,7 @@ class TD3(object):
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters())
 
         self.max_action = max_action
-        self.writer = SummaryWriter(log_dir="./DRL_robot_navigation_ros2/src/td3/scripts/runs")
+        self.writer = SummaryWriter(log_dir="/home/tyler/ros2_ws/src/Heterogenous-Robotics/DRL_robot_navigation_ros2/src/td3/scripts/runs")
         self.iter_count = 0
         self.logger = logger
 
@@ -638,8 +638,8 @@ def main(args=None):
     save_model = True
     load_model = False
 
-    result_dir = os.path.expanduser("~/ros2_ws/src/deep-rl-navigation/DRL_robot_navigation_ros2/src/td3/scripts/results")
-    model_dir = os.path.expanduser("~/ros2_ws/src/deep-rl-navigation/DRL_robot_navigation_ros2/src/td3/scripts/pytorch_models")
+    result_dir = os.path.expanduser("~/ros2_ws/src/Heterogenous-Robotics/DRL_robot_navigation_ros2/src/td3/scripts/results")
+    model_dir = os.path.expanduser("~/ros2_ws/src/Heterogenous-Robotics/DRL_robot_navigation_ros2/src/td3/scripts/pytorch_models")
 
     os.makedirs(result_dir, exist_ok=True)
     os.makedirs(model_dir, exist_ok=True)

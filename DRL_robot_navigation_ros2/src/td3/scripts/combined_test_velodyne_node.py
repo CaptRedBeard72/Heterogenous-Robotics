@@ -445,7 +445,7 @@ if __name__ == '__main__':
     seed = 0
     max_ep = 500
     file_name = "td3_velodyne"
-    model_dir = "/home/tyler/ros2_ws/src/deep-rl-navigation/DRL_robot_navigation_ros2/src/td3/scripts/pytorch_models"  # Update this path to your model directory
+    model_dir = "/home/tyler/ros2_ws/src/Heterogenous-Robotics/DRL_robot_navigation_ros2/src/td3/scripts/pytorch_models"  # Update this path to your model directory
     environment_dim = 75
     robot_dim = 7
     namespace = "robot_lidar"  # Set the appropriate namespace for the robot

@@ -95,7 +95,7 @@ class TD3(object):  # Corrected class name to match instantiation
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters())
 
         self.max_action = max_action
-        self.writer = SummaryWriter(log_dir="./DRL_robot_navigation_ros2/src/td3/scripts/runs")
+        self.writer = SummaryWriter(log_dir="/home/tyler/ros2_ws/src/Heterogenous-Robotics/DRL_robot_navigation_ros2/src/td3/scripts/runs")
         self.iter_count = 0
         self.logger = logger  # Add logger to the class
 

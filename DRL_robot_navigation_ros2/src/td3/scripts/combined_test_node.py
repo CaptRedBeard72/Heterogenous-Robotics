@@ -551,7 +551,7 @@ if __name__ == '__main__':
     # File paths and dimensions
     file_name_lidar = "td3_velodyne"
     file_name_camera = "td3_camera"
-    model_dir = "/home/tyler/ros2_ws/src/deep-rl-navigation/DRL_robot_navigation_ros2/src/td3/scripts/pytorch_models"
+    model_dir = "/home/tyler/ros2_ws/src/Heterogenous-Robotics/DRL_robot_navigation_ros2/src/td3/scripts/pytorch_models"
     environment_dim_lidar = 75
     environment_dim_camera = 999
     robot_dim_lidar = 7
