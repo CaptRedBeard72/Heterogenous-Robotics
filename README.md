@@ -17,8 +17,11 @@ ros2 launch td3 test_simulation.launch.py
 ```
 
 Original unmodified codes referenced here:
+```
 https://github.com/vishweshvhavle/deep-rl-navigation
 
+```
 Additional resources:
+```
 https://github.com/LantaoYu/MARL-Papers
 https://github.com/robodhruv/visualnav-transformer?tab=readme-ov-file
