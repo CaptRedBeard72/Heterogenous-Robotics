@@ -12,11 +12,14 @@ Install Python 3.10, ROS2 Humble, Gazebo 11 on Ubuntu 22.04
 For Training - 
 ```
 ros2 launch td3 train_simulation.launch.py
+ros2 launch td3 train_vint_simulation.launch.py
 ```
 
 For Testing - 
 ```
 ros2 launch td3 test_simulation.launch.py
+ros2 launch td3 test_vint_simulation.launch.py
+ros2 launch td3 test_combined_simulation.launch.py
 ```
 
 Original unmodified codes referenced here:
