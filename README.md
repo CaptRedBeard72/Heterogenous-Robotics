@@ -3,7 +3,7 @@ Deep Reinforcement Learning for mobile robot navigation in ROS2 Gazebo simulator
 
 # Camera Test 
 
-[![Watch the video]([https://raw.githubusercontent.com/username/repository/branch/path/to/video.mp4](https://github.com/CaptRedBeard72/Heterogenous-Robotics/blob/main/DRL_robot_navigation_ros2/src/Camera_test.webm))
+[![Watch the video]([https://raw.githubusercontent.com/username/repository/branch/path/to/video.mp4](https://github.com/CaptRedBeard72/Heterogenous-Robotics/blob/main/DRL_robot_navigation_ros2/src/Camera_test.webm)]
 
 # Future Goals
 Put both robots together in a single simulated world and perform training/testing while the opposite robots sensor data is being read by the other (i.e. Lidar using Camera data and vice-versa).
