@@ -1,6 +1,17 @@
 # Heterogenous Collaborative Goal-Driven Deep RL Policy for Robot Navigation
 Deep Reinforcement Learning for mobile robot navigation in ROS2 Gazebo simulator. Using Twin Delayed Deep Deterministic Policy Gradient (TD3) neural network and Visual Navigation Transformer (ViNT), two robots (one with a Lidar sensor and the other with a cameral sensor) learn to detect a target and take that target to a designated goal point in a simulated environment while avoiding obstacles. Trained in ROS2 Humble & Gazebo simulator with PyTorch. 
 
+# Twin Delayed DDPG (TD3)
+```
+Link to a full breakdown of how TD3 works
+https://spinningup.openai.com/en/latest/algorithms/td3.html
+```
+
+# Visual Navigation Transofromer (ViNT)
+```
+Link to a full breakdown on how ViNT works
+https://general-navigation-models.github.io/vint/index.html
+```
 
 # Future Goals
 Put both robots together in a single simulated world and perform training/testing while the opposite robots sensor data is being read by the other (i.e. Lidar using Camera data and vice-versa).
