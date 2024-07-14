@@ -349,8 +349,8 @@ class GazeboEnv(Node):
             self.get_logger().info("Penalty: Timeout occurred -500 points")
             reward = -500.0
         elif collision and box_moved:
-            self.get_logger().info("Reward: Box contact +50 points")
-            reward = 50.0
+            self.get_logger().info("Reward: Box contact +100 points")
+            reward = 100.0
         elif box_detected and (current_time - self.last_box_detection_time) > self.box_detection_cooldown:
             self.get_logger().info("Reward: Box detected +20 points")
             self.last_box_detection_time = current_time

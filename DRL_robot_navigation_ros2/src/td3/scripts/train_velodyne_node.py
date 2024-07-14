@@ -13,7 +13,7 @@ import rclpy
 from rclpy.node import Node
 import threading
 import math
-from gazebo_msgs.msg import ModelState, ModelStates, ContactsState
+from gazebo_msgs.msg import ModelState, ModelStates
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import PointCloud2
@@ -64,19 +64,15 @@ class Critic(nn.Module):
 
     def forward(self, s, a):
         s1 = F.relu(self.layer_1(s))
-        self.layer_2_s(s1)
-        self.layer_2_a(a)
-        s11 = torch.mm(s1, self.layer_2_s.weight.data.t())
-        s12 = torch.mm(a, self.layer_2_a.weight.data.t())
-        s1 = F.relu(s11 + s12 + self.layer_2_a.bias.data)
+        s11 = self.layer_2_s(s1)
+        s12 = self.layer_2_a(a)
+        s1 = F.relu(s11 + s12)
         q1 = self.layer_3(s1)
 
         s2 = F.relu(self.layer_4(s))
-        self.layer_5_s(s2)
-        self.layer_5_a(a)
-        s21 = torch.mm(s2, self.layer_5_s.weight.data.t())
-        s22 = torch.mm(a, self.layer_5_a.weight.data.t())
-        s2 = F.relu(s21 + s22 + self.layer_5_a.bias.data)
+        s21 = self.layer_5_s(s2)
+        s22 = self.layer_5_a(a)
+        s2 = F.relu(s21 + s22)
         q2 = self.layer_6(s2)
         return q1, q2
 
@@ -105,11 +101,11 @@ class TD3(object):
         self,
         replay_buffer,
         iterations,
-        batch_size=100,
+        batch_size=64,
         discount=0.99,
         tau=0.005,
-        policy_noise=0.2,
-        noise_clip=0.5,
+        policy_noise=0.1,
+        noise_clip=0.3,
         policy_freq=2,
     ):
         av_Q = 0
@@ -157,7 +153,8 @@ class TD3(object):
 
             av_loss += loss.item()
         self.iter_count += 1
-        self.logger.info(f"Reward/Penalty: loss={av_loss / iterations}, Av.Q={av_Q / iterations}, Max.Q={max_Q}, Iterations={self.iter_count}")
+        if it % 10 == 0:  # Log every 10 iterations instead of every iteration
+            self.logger.info(f"Reward/Penalty: loss={av_loss / iterations}, Av.Q={av_Q / iterations}, Max.Q={max_Q}, Iterations={self.iter_count}")
         self.writer.add_scalar("lidar_loss", av_loss / iterations, self.iter_count)
         self.writer.add_scalar("lidar_AvQ", av_Q / iterations, self.iter_count)
         self.writer.add_scalar("lidar_MaxQ", max_Q, self.iter_count)
@@ -290,8 +287,8 @@ class GazeboEnv(Node):
                 angle_diff += 2 * np.pi
 
             vel_cmd = Twist()
-            vel_cmd.linear.x = 0.7  # Move forward with constant speed
-            vel_cmd.angular.z = 1.0 * -angle_diff  # Tighter turn towards the goal
+            vel_cmd.linear.x = 0.5  # Move forward with constant speed
+            vel_cmd.angular.z = 1 * -angle_diff  # Adjust orientation towards the goal
             self.vel_pub.publish(vel_cmd)
         elif box_detected:
             self.box_detected_flag = True
@@ -306,14 +303,14 @@ class GazeboEnv(Node):
                 angle_diff += 2 * np.pi
 
             vel_cmd = Twist()
-            vel_cmd.linear.x = 0.7  # Move forward with constant speed
-            vel_cmd.angular.z = 2 * -angle_diff  # Tighter turn towards the box
+            vel_cmd.linear.x = 0.5  # Move forward with constant speed
+            vel_cmd.angular.z = 1 * -angle_diff  # Adjust orientation towards the box
             self.vel_pub.publish(vel_cmd)
         else:
             self.box_detected_flag = False
             vel_cmd = Twist()
             vel_cmd.linear.x = float(action[0])
-            vel_cmd.angular.z = float(action[1]) * 1.5
+            vel_cmd.angular.z = float(action[1])
             self.vel_pub.publish(vel_cmd)
 
         self.call_service(self.unpause)
@@ -523,8 +520,8 @@ class VelodyneSubscriber(Node):
         velodyne_data = np.ones(self.environment_dim) * 10
         for i in range(len(data)):
             if data[i][2] > -0.2:
-                dot = data[i][0] * 1 + data[i][1] * 0
-                mag1 = math.sqrt(math.pow(data[i][0], 2) + math.pow(data[i][1], 2))
+                dot = data[i][0]
+                mag1 = math.sqrt(data[i][0] ** 2 + data[i][1] ** 2)
                 value = dot / mag1
                 value = np.clip(value, -1.0, 1.0)
                 beta = math.acos(value) * np.sign(data[i][1])
