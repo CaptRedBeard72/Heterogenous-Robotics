@@ -100,7 +100,7 @@ class Critic(nn.Module):
         return q1, q2
 
 class TD3(object):
-    def __init__(self, state_dim, action_dim, max_action, logger):
+    def __init__(self, state_dim, action_dim, max_action, logger, log_dir):
         self.actor = Actor(state_dim, action_dim).to(device)
         self.actor_target = Actor(state_dim, action_dim).to(device)
         self.actor_target.load_state_dict(self.actor.state_dict())
@@ -112,7 +112,7 @@ class TD3(object):
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters())
 
         self.max_action = max_action
-        self.writer = SummaryWriter(log_dir="/home/tyler/ros2_ws/src/Heterogenous-Robotics/DRL_robot_navigation_ros2/src/td3/scripts/runs")
+        self.writer = SummaryWriter(log_dir=log_dir)
         self.iter_count = 0
         self.logger = logger
 
@@ -175,9 +175,10 @@ class TD3(object):
             av_loss += loss.item()
         self.iter_count += 1
         self.logger.info(f"Reward/Penalty: loss={av_loss / iterations}, Av.Q={av_Q / iterations}, Max.Q={max_Q}, Iterations={self.iter_count}")
-        self.writer.add_scalar("loss", av_loss / iterations, self.iter_count)
-        self.writer.add_scalar("Av. Q", av_Q / iterations, self.iter_count)
-        self.writer.add_scalar("Max. Q", max_Q, self.iter_count)
+        self.writer.add_scalar("camera_loss", av_loss / iterations, self.iter_count)
+        self.writer.add_scalar("camera_AvQ", av_Q / iterations, self.iter_count)
+        self.writer.add_scalar("camera_MaxQ", max_Q, self.iter_count)
+
 
     def save(self, filename, directory):
         torch.save(self.actor.state_dict(), "%s/%s_actor.pth" % (directory, filename))
@@ -654,7 +655,8 @@ def main(args=None):
     max_action = 1
 
     env = GazeboEnv(environment_dim)
-    network = TD3(state_dim, action_dim, max_action, env.get_logger())
+    log_dir = "/home/tyler/ros2_ws/src/Heterogenous-Robotics/DRL_robot_navigation_ros2/src/td3/scripts/runs/camera"
+    network = TD3(state_dim, action_dim, max_action, env.get_logger(), log_dir)
     replay_buffer = ReplayBuffer(buffer_size, seed)
     if load_model:
         try:

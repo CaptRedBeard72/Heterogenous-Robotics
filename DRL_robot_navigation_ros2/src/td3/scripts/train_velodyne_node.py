@@ -81,7 +81,7 @@ class Critic(nn.Module):
         return q1, q2
 
 class TD3(object):  # Corrected class name to match instantiation
-    def __init__(self, state_dim, action_dim, max_action, logger):
+    def __init__(self, state_dim, action_dim, max_action, logger, log_dir):
         # Initialize the Actor network
         self.actor = Actor(state_dim, action_dim).to(device)
         self.actor_target = Actor(state_dim, action_dim).to(device)
@@ -95,7 +95,7 @@ class TD3(object):  # Corrected class name to match instantiation
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters())
 
         self.max_action = max_action
-        self.writer = SummaryWriter(log_dir="/home/tyler/ros2_ws/src/Heterogenous-Robotics/DRL_robot_navigation_ros2/src/td3/scripts/runs")
+        self.writer = SummaryWriter(log_dir=log_dir)
         self.iter_count = 0
         self.logger = logger  # Add logger to the class
 
@@ -193,9 +193,10 @@ class TD3(object):  # Corrected class name to match instantiation
         self.iter_count += 1
         # Write new values for tensorboard
         self.logger.info(f"Reward/Penalty: loss={av_loss / iterations}, Av.Q={av_Q / iterations}, Max.Q={max_Q}, Iterations={self.iter_count}")  # Updated logger
-        self.writer.add_scalar("loss", av_loss / iterations, self.iter_count)
-        self.writer.add_scalar("Av. Q", av_Q / iterations, self.iter_count)
-        self.writer.add_scalar("Max. Q", max_Q, self.iter_count)
+        self.writer.add_scalar("lidar_loss", av_loss / iterations, self.iter_count)
+        self.writer.add_scalar("lidar_AvQ", av_Q / iterations, self.iter_count)
+        self.writer.add_scalar("lidar_MaxQ", max_Q, self.iter_count)
+
 
     def save(self, filename, directory):
         torch.save(self.actor.state_dict(), "%s/%s_actor.pth" % (directory, filename))
@@ -639,8 +640,8 @@ def main(args=None):
     load_model = False
     random_near_obstacle = True
 
-    result_dir = os.path.expanduser("~/ros2_ws/src/deep-rl-navigation/DRL_robot_navigation_ros2/src/td3/scripts/results")
-    model_dir = os.path.expanduser("~/ros2_ws/src/deep-rl-navigation/DRL_robot_navigation_ros2/src/td3/scripts/pytorch_models")
+    result_dir = os.path.expanduser("~/ros2_ws/src/Heterogenous-Robotics/DRL_robot_navigation_ros2/src/td3/scripts/results")
+    model_dir = os.path.expanduser("~/ros2_ws/src/Heterogenous-Robotics/DRL_robot_navigation_ros2/src/td3/scripts/pytorch_models")
 
     os.makedirs(result_dir, exist_ok=True)
     os.makedirs(model_dir, exist_ok=True)
@@ -655,7 +656,8 @@ def main(args=None):
     max_action = 1
 
     env = GazeboEnv(environment_dim)
-    network = TD3(state_dim, action_dim, max_action, env.get_logger())  # Pass the logger
+    log_dir = "/home/tyler/ros2_ws/src/Heterogenous-Robotics/DRL_robot_navigation_ros2/src/td3/scripts/runs/velodyne"
+    network = TD3(state_dim, action_dim, max_action, env.get_logger(), log_dir)  # Pass the logger and log_dir
     replay_buffer = ReplayBuffer(buffer_size, seed)
     if load_model:
         try:
