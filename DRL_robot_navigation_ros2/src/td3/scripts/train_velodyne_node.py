@@ -162,7 +162,6 @@ class TD3(object):
         self.writer.add_scalar("lidar_AvQ", av_Q / iterations, self.iter_count)
         self.writer.add_scalar("lidar_MaxQ", max_Q, self.iter_count)
 
-
     def save(self, filename, directory):
         torch.save(self.actor.state_dict(), "%s/%s_actor.pth" % (directory, filename))
         torch.save(self.critic.state_dict(), "%s/%s_critic.pth" % (directory, filename))
@@ -188,7 +187,7 @@ class GazeboEnv(Node):
         self.box_detected_flag = False
         self.previous_box_position = None
         self.timeout_start_time = time.time()
-        self.timeout_duration = 120
+        self.timeout_duration = 240
 
         self.set_self_state = ModelState()
         self.set_self_state.model_name = "r1"
@@ -388,8 +387,8 @@ class GazeboEnv(Node):
             self.get_logger().info("Penalty: Timeout occurred -500 points")
             reward = -500.0
         elif collision and box_moved:
-            self.get_logger().info("Reward: Box contact +200 points")
-            reward = 200.0
+            self.get_logger().info("Reward: Box contact +100 points")
+            reward = 100.0
         elif box_detected and (current_time - self.last_box_detection_time) > self.box_detection_cooldown:
             self.get_logger().info("Reward: Box detected +20 points")
             self.last_box_detection_time = current_time
