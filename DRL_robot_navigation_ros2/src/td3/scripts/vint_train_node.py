@@ -56,9 +56,9 @@ class Actor(nn.Module):
     def __init__(self, state_dim, action_dim):
         super(Actor, self).__init__()
 
-        self.layer_1 = nn.Linear(state_dim, 800)
-        self.layer_2 = nn.Linear(800, 600)
-        self.layer_3 = nn.Linear(600, action_dim)
+        self.layer_1 = nn.Linear(state_dim, 1024)  # Increased network capacity
+        self.layer_2 = nn.Linear(1024, 512)
+        self.layer_3 = nn.Linear(512, action_dim)
         self.tanh = nn.Tanh()
 
     def forward(self, s):
@@ -71,15 +71,15 @@ class Critic(nn.Module):
     def __init__(self, state_dim, action_dim):
         super(Critic, self).__init__()
 
-        self.layer_1 = nn.Linear(state_dim, 800)
-        self.layer_2_s = nn.Linear(800, 600)
-        self.layer_2_a = nn.Linear(action_dim, 600)
-        self.layer_3 = nn.Linear(600, 1)
+        self.layer_1 = nn.Linear(state_dim, 1024)  # Increased network capacity
+        self.layer_2_s = nn.Linear(1024, 512)
+        self.layer_2_a = nn.Linear(action_dim, 512)
+        self.layer_3 = nn.Linear(512, 1)
 
-        self.layer_4 = nn.Linear(state_dim, 800)
-        self.layer_5_s = nn.Linear(800, 600)
-        self.layer_5_a = nn.Linear(action_dim, 600)
-        self.layer_6 = nn.Linear(600, 1)
+        self.layer_4 = nn.Linear(state_dim, 1024)
+        self.layer_5_s = nn.Linear(1024, 512)
+        self.layer_5_a = nn.Linear(action_dim, 512)
+        self.layer_6 = nn.Linear(512, 1)
 
     def forward(self, s, a):
         s1 = F.relu(self.layer_1(s))
@@ -158,6 +158,7 @@ class TD3(object):
 
             self.critic_optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 1.0)  # Gradient clipping
             self.critic_optimizer.step()
 
             if it % policy_freq == 0:
@@ -165,6 +166,7 @@ class TD3(object):
                 actor_grad = -actor_grad.mean()
                 self.actor_optimizer.zero_grad()
                 actor_grad.backward()
+                torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)  # Gradient clipping
                 self.actor_optimizer.step()
 
                 for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
@@ -268,21 +270,17 @@ class GazeboEnv(Node):
                 index = msg.name.index("target_box")
                 self.box_state.pose = msg.pose[index]
 
-                # Update the marker's position
                 self.box_marker.header.stamp = self.get_clock().now().to_msg()
                 self.box_marker.pose = self.box_state.pose
                 self.box_marker_pub.publish(self.box_marker)
 
-                # self.get_logger().info(f"Box state updated: ({self.box_state.pose.position.x}, {self.box_state.pose.position.y})")
             else:
                 self.get_logger().warning("Box model not found in the model states.")
         except Exception as e:
             self.get_logger().error(f"Error in model_states_callback: {e}")
 
     def is_box_detected(self, image_features, detection_threshold=3.0):
-        # Check if any feature exceeds the threshold
         detected = torch.any(image_features > detection_threshold).item()
-        # self.get_logger().info(f"Box detection status: {detected}, Threshold: {detection_threshold}")
         return detected
 
     def has_box_moved(self):
@@ -297,7 +295,6 @@ class GazeboEnv(Node):
     def observe_collision(self, robot_position, box_position):
         collision_distance = 0.47  # Based on half of the box size (0.5 / 2)
         distance = np.linalg.norm(np.array(robot_position) - np.array(box_position))
-        # self.get_logger().info(f"Distance to box: {distance}, Collision threshold: {collision_distance}")
         if distance < collision_distance:
             self.get_logger().info("Box touched!")
             return True
@@ -333,25 +330,20 @@ class GazeboEnv(Node):
             self.camera_data = torch.tensor(self.camera_data).to(device).float()
 
         image_features = vint_model(self.camera_data.unsqueeze(0)).squeeze(0)
-        # self.get_logger().info(f"Image features: {image_features[:10]}")  # Log first 10 features for brevity
 
         box_detected = self.is_box_detected(image_features)
-        # self.get_logger().info(f"Box detected: {box_detected}")
 
         box_x = self.box_state.pose.position.x
         box_y = self.box_state.pose.position.y
         box_position = [box_x, box_y]
 
-        # self.get_logger().info(f"Calling observe_collision with robot_position: {robot_position} and box_position: {box_position}")
         collision = self.observe_collision(robot_position, box_position)
-        # self.get_logger().info(f"observe_collision returned: {collision}")
 
         if collision:
             box_x = self.box_state.pose.position.x
             box_y = self.box_state.pose.position.y
             direction_to_goal = np.arctan2(self.goal_y - box_y, self.goal_x - box_x)
 
-            # Normalize the angle difference to the range [-pi, pi]
             angle_diff = direction_to_goal - angle
             while angle_diff > np.pi:
                 angle_diff -= 2 * np.pi
@@ -368,7 +360,6 @@ class GazeboEnv(Node):
             box_y = self.box_state.pose.position.y
             direction_to_box = np.arctan2(box_y - self.odom_y, box_x - self.odom_x)
 
-            # Normalize the angle difference to the range [-pi, pi]
             angle_diff = direction_to_box - angle
             while angle_diff > np.pi:
                 angle_diff -= 2 * np.pi
@@ -385,7 +376,7 @@ class GazeboEnv(Node):
             vel_cmd.linear.x = float(action[0])
             vel_cmd.angular.z = float(action[1])
             self.vel_pub.publish(vel_cmd)
-            
+
         self.call_service(self.unpause)
         time.sleep(TIME_DELTA)
         self.call_service(self.pause)

@@ -56,9 +56,9 @@ class Actor(nn.Module):
     def __init__(self, state_dim, action_dim):
         super(Actor, self).__init__()
 
-        self.layer_1 = nn.Linear(state_dim, 800)
-        self.layer_2 = nn.Linear(800, 600)
-        self.layer_3 = nn.Linear(600, action_dim)
+        self.layer_1 = nn.Linear(state_dim, 1024)  # Increased network capacity
+        self.layer_2 = nn.Linear(1024, 512)
+        self.layer_3 = nn.Linear(512, action_dim)
         self.tanh = nn.Tanh()
 
     def forward(self, s):

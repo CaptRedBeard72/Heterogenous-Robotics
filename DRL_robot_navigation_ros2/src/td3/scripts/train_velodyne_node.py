@@ -37,9 +37,9 @@ class Actor(nn.Module):
     def __init__(self, state_dim, action_dim):
         super(Actor, self).__init__()
 
-        self.layer_1 = nn.Linear(state_dim, 800)
-        self.layer_2 = nn.Linear(800, 600)
-        self.layer_3 = nn.Linear(600, action_dim)
+        self.layer_1 = nn.Linear(state_dim, 1024)  # Increased network capacity
+        self.layer_2 = nn.Linear(1024, 512)
+        self.layer_3 = nn.Linear(512, action_dim)
         self.tanh = nn.Tanh()
 
     def forward(self, s):
@@ -52,15 +52,15 @@ class Critic(nn.Module):
     def __init__(self, state_dim, action_dim):
         super(Critic, self).__init__()
 
-        self.layer_1 = nn.Linear(state_dim, 800)
-        self.layer_2_s = nn.Linear(800, 600)
-        self.layer_2_a = nn.Linear(action_dim, 600)
-        self.layer_3 = nn.Linear(600, 1)
+        self.layer_1 = nn.Linear(state_dim, 1024)  # Increased network capacity
+        self.layer_2_s = nn.Linear(1024, 512)
+        self.layer_2_a = nn.Linear(action_dim, 512)
+        self.layer_3 = nn.Linear(512, 1)
 
-        self.layer_4 = nn.Linear(state_dim, 800)
-        self.layer_5_s = nn.Linear(800, 600)
-        self.layer_5_a = nn.Linear(action_dim, 600)
-        self.layer_6 = nn.Linear(600, 1)
+        self.layer_4 = nn.Linear(state_dim, 1024)
+        self.layer_5_s = nn.Linear(1024, 512)
+        self.layer_5_a = nn.Linear(action_dim, 512)
+        self.layer_6 = nn.Linear(512, 1)
 
     def forward(self, s, a):
         s1 = F.relu(self.layer_1(s))
@@ -80,15 +80,13 @@ class Critic(nn.Module):
         q2 = self.layer_6(s2)
         return q1, q2
 
-class TD3(object):  # Corrected class name to match instantiation
+class TD3(object):
     def __init__(self, state_dim, action_dim, max_action, logger, log_dir):
-        # Initialize the Actor network
         self.actor = Actor(state_dim, action_dim).to(device)
         self.actor_target = Actor(state_dim, action_dim).to(device)
         self.actor_target.load_state_dict(self.actor.state_dict())
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters())
 
-        # Initialize the Critic networks
         self.critic = Critic(state_dim, action_dim).to(device)
         self.critic_target = Critic(state_dim, action_dim).to(device)
         self.critic_target.load_state_dict(self.critic.state_dict())
@@ -97,102 +95,69 @@ class TD3(object):  # Corrected class name to match instantiation
         self.max_action = max_action
         self.writer = SummaryWriter(log_dir=log_dir)
         self.iter_count = 0
-        self.logger = logger  # Add logger to the class
+        self.logger = logger
 
     def get_action(self, state):
-        # Function to get the action from the actor
         state = torch.Tensor(state.reshape(1, -1)).to(device)
         return self.actor(state).cpu().data.numpy().flatten()
 
-    # training cycle
     def train(
         self,
         replay_buffer,
         iterations,
         batch_size=100,
-        discount=0.99,  # Corrected discount to 0.99
+        discount=0.99,
         tau=0.005,
         policy_noise=0.2,
         noise_clip=0.5,
         policy_freq=2,
     ):
         av_Q = 0
-        max_Q = float('-inf')  # Corrected inf to float('-inf')
+        max_Q = float('-inf')
         av_loss = 0
         for it in range(iterations):
-            # sample a batch from the replay buffer
-            (
-                batch_states,
-                batch_actions,
-                batch_rewards,
-                batch_dones,
-                batch_next_states,
-            ) = replay_buffer.sample_batch(batch_size)
+            batch_states, batch_actions, batch_rewards, batch_dones, batch_next_states = replay_buffer.sample_batch(batch_size)
             state = torch.Tensor(batch_states).to(device)
             next_state = torch.Tensor(batch_next_states).to(device)
             action = torch.Tensor(batch_actions).to(device)
             reward = torch.Tensor(batch_rewards).to(device)
             done = torch.Tensor(batch_dones).to(device)
 
-            # Obtain the estimated action from the next state by using the actor-target
             next_action = self.actor_target(next_state)
-
-            # Add noise to the action
             noise = torch.Tensor(batch_actions).data.normal_(0, policy_noise).to(device)
             noise = noise.clamp(-noise_clip, noise_clip)
             next_action = (next_action + noise).clamp(-self.max_action, self.max_action)
 
-            # Calculate the Q values from the critic-target network for the next state-action pair
             target_Q1, target_Q2 = self.critic_target(next_state, next_action)
-
-            # Select the minimal Q value from the 2 calculated values
             target_Q = torch.min(target_Q1, target_Q2)
             av_Q += torch.mean(target_Q)
-            max_Q = max(max_Q, torch.max(target_Q).item())  # Added .item() to get scalar value
-            # Calculate the final Q value from the target network parameters by using Bellman equation
+            max_Q = max(max_Q, torch.max(target_Q).item())
             target_Q = reward + ((1 - done) * discount * target_Q).detach()
 
-            # Get the Q values of the basis networks with the current parameters
             current_Q1, current_Q2 = self.critic(state, action)
-
-            # Calculate the loss between the current Q value and the target Q value
             loss = F.mse_loss(current_Q1, target_Q) + F.mse_loss(current_Q2, target_Q)
 
-            # Perform the gradient descent
             self.critic_optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 1.0)  # Gradient clipping
             self.critic_optimizer.step()
 
             if it % policy_freq == 0:
-                # Maximize the actor output value by performing gradient descent on negative Q values
-                # (essentially perform gradient ascent)
                 actor_grad, _ = self.critic(state, self.actor(state))
                 actor_grad = -actor_grad.mean()
                 self.actor_optimizer.zero_grad()
                 actor_grad.backward()
+                torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)  # Gradient clipping
                 self.actor_optimizer.step()
 
-                # Use soft update to update the actor-target network parameters by
-                # infusing small amount of current parameters
-                for param, target_param in zip(
-                    self.actor.parameters(), self.actor_target.parameters()
-                ):
-                    target_param.data.copy_(
-                        tau * param.data + (1 - tau) * target_param.data
-                    )
-                # Use soft update to update the critic-target network parameters by infusing
-                # small amount of current parameters
-                for param, target_param in zip(
-                    self.critic.parameters(), self.critic_target.parameters()
-                ):
-                    target_param.data.copy_(
-                        tau * param.data + (1 - tau) * target_param.data
-                    )
+                for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
+                    target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+                for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
+                    target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
 
-            av_loss += loss.item()  # Added .item() to get scalar value
+            av_loss += loss.item()
         self.iter_count += 1
-        # Write new values for tensorboard
-        self.logger.info(f"Reward/Penalty: loss={av_loss / iterations}, Av.Q={av_Q / iterations}, Max.Q={max_Q}, Iterations={self.iter_count}")  # Updated logger
+        self.logger.info(f"Reward/Penalty: loss={av_loss / iterations}, Av.Q={av_Q / iterations}, Max.Q={max_Q}, Iterations={self.iter_count}")
         self.writer.add_scalar("lidar_loss", av_loss / iterations, self.iter_count)
         self.writer.add_scalar("lidar_AvQ", av_Q / iterations, self.iter_count)
         self.writer.add_scalar("lidar_MaxQ", max_Q, self.iter_count)
@@ -203,12 +168,8 @@ class TD3(object):  # Corrected class name to match instantiation
         torch.save(self.critic.state_dict(), "%s/%s_critic.pth" % (directory, filename))
 
     def load(self, filename, directory):
-        self.actor.load_state_dict(
-            torch.load("%s/%s_actor.pth" % (directory, filename))
-        )
-        self.critic.load_state_dict(
-            torch.load("%s/%s_critic.pth" % (directory, filename))
-        )
+        self.actor.load_state_dict(torch.load("%s/%s_actor.pth" % (directory, filename)))
+        self.critic.load_state_dict(torch.load("%s/%s_critic.pth" % (directory, filename)))
 
 def is_box_detected(velodyne_data, detection_range=3.0):
     detection_threshold = sum(velodyne_data < detection_range)
@@ -261,12 +222,8 @@ class GazeboEnv(Node):
 
         self.create_timer(1.0, self.publish_goal_marker)
 
-        # Add logger for environment dimension
         self.get_logger().info(f"Environment dimension: {self.environment_dim}")
-
-        # Add logger for state dimension
-        state_dim = self.environment_dim + 7  # 7 is the robot_dim
-        self.get_logger().info(f"State dimension: {state_dim}")
+        self.get_logger().info(f"State dimension: {self.environment_dim + 7}")
 
     def model_states_callback(self, msg):
         try:
@@ -288,13 +245,11 @@ class GazeboEnv(Node):
         return box_moved
 
     def observe_collision(self, laser_data):
-        # Detect a collision from laser data
         min_laser = min(laser_data)
         if min_laser < COLLISION_DIST:
             self.get_logger().info("Box touched!")
             return True, min_laser
         return False, min_laser
-
 
     def step(self, action):
         global last_odom, velodyne_data
@@ -458,7 +413,6 @@ class GazeboEnv(Node):
         except rclpy.ServiceException as exc:
             self.get_logger().error(f'Service call failed: {exc}')
 
-        # Ensure the initial positions and orientations are set according to the world file
         self.box_state.pose.position.x = 3.0
         self.box_state.pose.position.y = 0.0
         self.box_state.pose.position.z = 0.25
@@ -523,7 +477,6 @@ class GazeboEnv(Node):
             self.get_logger().error(f"Service call failed: {e}")
 
     def publish_goal_marker(self):
-        # Publish visual data in Rviz
         markerArray = MarkerArray()
         marker = Marker()
         marker.header.frame_id = "odom"
