@@ -1,6 +1,7 @@
 import os
 import pandas as pd
 import matplotlib.pyplot as plt
+from scipy.interpolate import interp1d
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
 # Paths to the TensorBoard log directories
@@ -54,34 +55,74 @@ for sensor, log_dir in log_dirs.items():
         if steps_data[sensor] is None:
             steps_data[sensor] = steps
 
-# Save data to CSV
+# Normalize data
+normalized_data = {}
 for sensor, sensor_data in data.items():
-    df = pd.DataFrame(sensor_data, index=steps_data[sensor])
-    csv_file = os.path.join(log_dirs[sensor], f"{sensor}_training_metrics.csv")
-    df.to_csv(csv_file)
-    print(f"{sensor.capitalize()} training metrics saved to {csv_file}")
+    normalized_data[sensor] = {}
+    for tag, values in sensor_data.items():
+        max_value = max(values)
+        normalized_data[sensor][tag] = [(value / max_value) * 100 for value in values]
 
-# Plot the data
-plt.figure(figsize=(12, 16))
+# Interpolate velodyne data to match camera steps
+interp_velodyne_data = {}
+camera_steps = steps_data['camera']
+for tag in tags['velodyne']:
+    velodyne_interp = interp1d(steps_data['velodyne'], normalized_data['velodyne'][tag], kind='linear', fill_value='extrapolate')
+    interp_velodyne_data[tag] = velodyne_interp(camera_steps)
 
-for i, sensor in enumerate(tags.keys()):
-    plt.subplot(3, 2, i*3 + 1)
-    plt.plot(steps_data[sensor], data[sensor][f"{tags[sensor][0]}"], label=f'{sensor.capitalize()} Loss')
-    plt.xlabel('Iteration')
-    plt.ylabel('Loss')
-    plt.legend()
+# Save interpolated velodyne data to CSV
+interp_velodyne_df = pd.DataFrame(interp_velodyne_data, index=camera_steps)
+velodyne_csv_file = os.path.join(log_dirs['velodyne'], f"velodyne_training_metrics_interpolated.csv")
+interp_velodyne_df.to_csv(velodyne_csv_file)
+print(f"Interpolated velodyne training metrics saved to {velodyne_csv_file}")
 
-    plt.subplot(3, 2, i*3 + 2)
-    plt.plot(steps_data[sensor], data[sensor][f"{tags[sensor][1]}"], label=f'{sensor.capitalize()} Average Q')
-    plt.xlabel('Iteration')
-    plt.ylabel('Average Q')
-    plt.legend()
+# Save normalized camera data to CSV
+camera_df = pd.DataFrame(normalized_data['camera'], index=camera_steps)
+camera_csv_file = os.path.join(log_dirs['camera'], f"camera_training_metrics_normalized.csv")
+camera_df.to_csv(camera_csv_file)
+print(f"Camera normalized training metrics saved to {camera_csv_file}")
 
-    plt.subplot(3, 2, i*3 + 3)
-    plt.plot(steps_data[sensor], data[sensor][f"{tags[sensor][2]}"], label=f'{sensor.capitalize()} Max Q')
-    plt.xlabel('Iteration')
-    plt.ylabel('Max Q')
-    plt.legend()
+# Save original normalized velodyne data to CSV
+original_velodyne_df = pd.DataFrame(normalized_data['velodyne'], index=steps_data['velodyne'])
+original_velodyne_csv_file = os.path.join(log_dirs['velodyne'], f"velodyne_training_metrics_normalized_original.csv")
+original_velodyne_df.to_csv(original_velodyne_csv_file)
+print(f"Original Velodyne normalized training metrics saved to {original_velodyne_csv_file}")
+
+# Plot the normalized data with interpolated velodyne data
+plt.figure(figsize=(12, 12))
+
+# Plot camera data
+plt.subplot(3, 1, 1)
+plt.plot(camera_steps, normalized_data["camera"]["camera_loss"], label='Camera Loss')
+plt.plot(camera_steps, normalized_data["camera"]["camera_AvQ"], label='Camera Average Q')
+plt.plot(camera_steps, normalized_data["camera"]["camera_MaxQ"], label='Camera Max Q')
+plt.xlabel('Iteration')
+plt.ylabel('Percentage')
+plt.title('Camera Data')
+plt.legend()
+plt.grid(True)
+
+# Plot interpolated velodyne data
+plt.subplot(3, 1, 2)
+plt.plot(camera_steps, interp_velodyne_data["lidar_loss"], label='Velodyne Loss (Interpolated)')
+plt.plot(camera_steps, interp_velodyne_data["lidar_AvQ"], label='Velodyne Average Q (Interpolated)')
+plt.plot(camera_steps, interp_velodyne_data["lidar_MaxQ"], label='Velodyne Max Q (Interpolated)')
+plt.xlabel('Iteration')
+plt.ylabel('Percentage')
+plt.title('Velodyne Data (Interpolated)')
+plt.legend()
+plt.grid(True)
+
+# Plot original velodyne data
+plt.subplot(3, 1, 3)
+plt.plot(steps_data['velodyne'], normalized_data["velodyne"]["lidar_loss"], label='Velodyne Loss')
+plt.plot(steps_data['velodyne'], normalized_data["velodyne"]["lidar_AvQ"], label='Velodyne Average Q')
+plt.plot(steps_data['velodyne'], normalized_data["velodyne"]["lidar_MaxQ"], label='Velodyne Max Q')
+plt.xlabel('Iteration')
+plt.ylabel('Percentage')
+plt.title('Original Velodyne Data')
+plt.legend()
+plt.grid(True)
 
 plt.tight_layout()
 plt.show()
