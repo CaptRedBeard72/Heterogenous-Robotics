@@ -22,6 +22,11 @@ from std_srvs.srv import Empty
 from visualization_msgs.msg import Marker, MarkerArray
 from torchvision import transforms
 from PIL import Image as PILImage
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+import time
 
 # Parameters
 GOAL_REACHED_DIST = 0.5
@@ -42,13 +47,61 @@ transform = transforms.Compose([
 
 # Define ViNT model
 class ViNT(nn.Module):
-    def __init__(self, pretrained=True):
+    def __init__(self):
         super(ViNT, self).__init__()
-        self.model = torch.hub.load('facebookresearch/deit:main', 'deit_base_distilled_patch16_224', pretrained=pretrained)
-        self.model.eval()
+        # Define the ViT structure
+        self.embedding_dim = 768
+        self.num_classes = 1000  # Number of output classes in ViT
+
+        # Patch Embedding
+        self.patch_size = 16
+        self.num_patches = (224 // self.patch_size) ** 2
+        self.patch_embedding = nn.Conv2d(3, self.embedding_dim, kernel_size=self.patch_size, stride=self.patch_size)
+
+        # Class and Distillation tokens
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, self.embedding_dim))
+        self.dist_token = nn.Parameter(torch.zeros(1, 1, self.embedding_dim))
+        self.pos_embedding = nn.Parameter(torch.zeros(1, self.num_patches + 2, self.embedding_dim))  # +2 for class and distillation tokens
+
+        # Transformer Encoder Layers
+        self.transformer = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model=self.embedding_dim, nhead=12, dim_feedforward=3072),
+            num_layers=12
+        )
+
+        # MLP Head for Classification
+        self.mlp_head = nn.Sequential(
+            nn.LayerNorm(self.embedding_dim),
+            nn.Linear(self.embedding_dim, self.num_classes)
+        )
+
+        # Distillation Head for knowledge distillation
+        self.dist_head = nn.Sequential(
+            nn.LayerNorm(self.embedding_dim),
+            nn.Linear(self.embedding_dim, self.num_classes)
+        )
 
     def forward(self, x):
-        return self.model(x)
+        # Patch Embedding
+        x = self.patch_embedding(x).flatten(2).transpose(1, 2)
+
+        # Add Class and Distillation tokens
+        batch_size = x.shape[0]
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
+        dist_tokens = self.dist_token.expand(batch_size, -1, -1)
+        x = torch.cat((cls_tokens, dist_tokens, x), dim=1)
+
+        # Add positional encoding
+        x = x + self.pos_embedding
+
+        # Transformer Encoder
+        x = self.transformer(x)
+
+        # Separate outputs for classification and distillation heads
+        cls_output = self.mlp_head(x[:, 0])
+        dist_output = self.dist_head(x[:, 1])
+
+        return cls_output, dist_output
 
 vint_model = ViNT().to(device)
 
@@ -112,9 +165,10 @@ class TD3(object):
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters())
 
         self.max_action = max_action
-        self.writer = SummaryWriter(log_dir=log_dir)
         self.iter_count = 0
         self.logger = logger
+        self.train_accuracies = []  # List to track training accuracies
+        self.losses = []  # List to track loss values over time
 
     def get_action(self, state):
         state = torch.Tensor(state.reshape(1, -1)).to(device)
@@ -141,6 +195,7 @@ class TD3(object):
             action = torch.Tensor(batch_actions).to(device)
             reward = torch.Tensor(batch_rewards).to(device)
             done = torch.Tensor(batch_dones).to(device)
+            av_loss += loss.item()
 
             next_action = self.actor_target(next_state)
             noise = torch.Tensor(batch_actions).data.normal_(0, policy_noise).to(device)
@@ -160,6 +215,8 @@ class TD3(object):
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 1.0)  # Gradient clipping
             self.critic_optimizer.step()
+            self.iter_count += 1
+            self.losses.append(av_loss / iterations)
 
             if it % policy_freq == 0:
                 actor_grad, _ = self.critic(state, self.actor(state))
@@ -168,19 +225,63 @@ class TD3(object):
                 actor_grad.backward()
                 torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)  # Gradient clipping
                 self.actor_optimizer.step()
+                
 
                 for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
                     target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
                 for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
                     target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
 
-            av_loss += loss.item()
+            av_loss += loss.item()  
+        
+        # Log the average loss and Q-values in the console after each training run
+        if it % 10 == 0:
+            print(f"Iteration {it}: Loss = {av_loss / iterations}, Avg Q = {av_Q / iterations}, Max Q = {max_Q}")
+
+        self.losses.append(av_loss / iterations)  # Store the average loss
         self.iter_count += 1
         self.logger.info(f"Reward/Penalty: loss={av_loss / iterations}, Av.Q={av_Q / iterations}, Max.Q={max_Q}, Iterations={self.iter_count}")
-        self.writer.add_scalar("camera_loss", av_loss / iterations, self.iter_count)
-        self.writer.add_scalar("camera_AvQ", av_Q / iterations, self.iter_count)
-        self.writer.add_scalar("camera_MaxQ", max_Q, self.iter_count)
+    
+    def evaluate_accuracy(self, env, episodes=10):
+        correct = 0
+        for _ in range(episodes):
+            state = env.reset()
+            done = False
+            while not done:
+                action = self.get_action(np.array(state))
+                next_state, done, reached_goal = env.step(action)
+                if reached_goal:
+                    correct += 1
+                state = next_state
+        accuracy = correct / episodes
+        return accuracy
+        
+    def log_epoch(self, env):
+        # Log train accuracy
+        train_acc = self.evaluate_accuracy(env)
+        self.train_accuracies.append(train_acc)
+        print(f"Epoch {self.iter_count}: Training Accuracy = {train_acc}")
 
+    def plot_periodic_metrics(self):
+        if self.iter_count % 10 == 0:
+            epochs = range(1, len(self.losses) + 1)
+            # Plot loss
+            plt.figure()
+            plt.plot(epochs, self.losses, label="Loss")
+            plt.xlabel("Epochs")
+            plt.ylabel("Loss")
+            plt.title("Loss over Epochs")
+            plt.legend()
+            plt.show()
+            
+            # Plot accuracy
+            plt.figure()
+            plt.plot(epochs, self.train_accuracies, label="Training Accuracy")
+            plt.xlabel("Epochs")
+            plt.ylabel("Accuracy")
+            plt.title("Training Accuracy over Epochs")
+            plt.legend()
+            plt.show()
 
     def save(self, filename, directory):
         torch.save(self.actor.state_dict(), "%s/%s_actor.pth" % (directory, filename))
@@ -430,9 +531,6 @@ class GazeboEnv(Node):
             done = True
             reward -= 300.0
 
-        if reached_goal:
-            done = True
-
         return state.detach().cpu().numpy(), reward, done, reached_goal
 
     def get_reward(self, target, collision, timeout, box_detected, current_time, box_moved, distance_to_box):
@@ -592,7 +690,7 @@ def evaluate(env, network, epoch, eval_episodes=10):
                 col += 1
             if reached_goal:
                 goal_reached += 1
-            if env.has_box_moved():
+            if env.has_box_moved():  # Call the method instead of accessing a non-existing attribute
                 successful_pushes += 1
 
     avg_reward /= eval_episodes
@@ -606,6 +704,62 @@ def evaluate(env, network, epoch, eval_episodes=10):
     )
     env.get_logger().info("..............................................")
     return avg_reward
+
+# Define plot function for network architectures
+def plot_2d_network_architecture(network_name, layers, layer_labels):
+    """
+    Plot an improved network architecture with connecting arrows and minimum block height.
+
+    Args:
+        network_name (str): Name of the network (e.g., "Actor" or "Critic").
+        layers (list): List containing the number of units in each layer.
+        layer_labels (list): List containing labels for each layer.
+    """
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.set_title(f"{network_name} Architecture", fontsize=16)
+    
+    # Define spacing and sizes
+    layer_spacing = 3          # Space between layers
+    layer_width = 1.5          # Fixed width for each layer
+    max_height = 4.0           # Maximum height for the largest layer
+    min_height = 0.5           # Minimum height to ensure small layers are visible
+
+    max_units = max(layers)
+
+    # Draw each layer as a rectangle and add connecting arrows
+    for i, (units, label) in enumerate(zip(layers, layer_labels)):
+        # Calculate height based on the number of units, but enforce a minimum height
+        height = max((units / max_units) * max_height, min_height)
+        x_position = i * layer_spacing
+        y_position = -height / 2
+
+        # Draw rectangle for the layer
+        rect = patches.Rectangle((x_position, y_position), layer_width, height, linewidth=1,
+                                 edgecolor="black", facecolor="skyblue")
+        ax.add_patch(rect)
+
+        # Annotate layer with the number of units
+        ax.text(x_position + layer_width / 2, y_position + height / 2, f"{label}\n({units} units)",
+                ha="center", va="center", fontsize=10, color="black")
+
+        # Draw connecting arrows
+        if i > 0:
+            prev_x_position = (i - 1) * layer_spacing + layer_width
+            arrow = patches.FancyArrowPatch((prev_x_position, 0), (x_position, 0),
+                                            connectionstyle="arc3,rad=0.2", 
+                                            arrowstyle="->", mutation_scale=15, color="gray")
+            ax.add_patch(arrow)
+
+    # Set plot limits and layout
+    ax.set_xlim(-1, len(layers) * layer_spacing)
+    ax.set_ylim(-max_height / 2 - 1, max_height / 2 + 1)
+    ax.axis("off")
+    plt.tight_layout()
+
+    # Save the plot in the Pictures folder
+    save_path = os.path.expanduser(f"~/Pictures/{network_name.lower()}_architecture.png")
+    plt.savefig(save_path)  # Save the plot
+    plt.close(fig)  # Close the figure to free up memory
 
 def main(args=None):
     rclpy.init(args=args)
@@ -629,6 +783,8 @@ def main(args=None):
     file_name = "td3_camera"
     save_model = True
     load_model = False
+    start_time = time.time()
+    max_epochs = 100
 
     result_dir = os.path.expanduser("~/ros2_ws/src/Heterogenous-Robotics/DRL_robot_navigation_ros2/src/td3/scripts/results")
     model_dir = os.path.expanduser("~/ros2_ws/src/Heterogenous-Robotics/DRL_robot_navigation_ros2/src/td3/scripts/pytorch_models")
@@ -655,6 +811,8 @@ def main(args=None):
         except Exception as e:
             print(f"Could not load the stored model parameters, initializing training with random parameters: {e}")
 
+    plot_2d_network_architecture("ViNT Model", [3 * 224 * 224, 768, 768, 1000])
+
     evaluations = []
 
     timestep = 0
@@ -675,6 +833,11 @@ def main(args=None):
 
     try:
         while rclpy.ok() and timestep < max_timesteps:
+            elapsed_time = time.time() - start_time
+            if elapsed_time >= 3600:
+                print("Training time limit reached. Ending training.")
+                break
+
             if done:
                 if timestep != 0:
                     network.train(
@@ -690,12 +853,28 @@ def main(args=None):
 
                 if timesteps_since_eval >= eval_freq:
                     timesteps_since_eval %= eval_freq
-                    evaluations.append(evaluate(env, network=network, epoch=epoch, eval_episodes=eval_ep))
+                    network.log_epoch(env)
+
+                    # Display the current epoch in the terminal
+                    print(f"Starting Epoch {epoch}")
+                    
+                    avg_reward = evaluate(env, network=network, epoch=epoch, eval_episodes=eval_ep)
+                    evaluations.append(avg_reward)
 
                     if save_model:
                         network.save(file_name, model_dir)
-                        np.save(os.path.join(result_dir, file_name), evaluations)
+                        np.save(os.path.join(save_path, "train_vint_accuracies.npy"), network.train_accuracies)
+                        np.save(os.path.join(save_path, "vint_losses.npy"), network.losses)
+                        np.save(os.path.join(save_path, file_name), evaluations)
+                        print(f"Saved accuracy and loss data for epoch {epoch}")
+
+                    network.plot_periodic_metrics()
+
                     epoch += 1
+
+                    if epoch > max_epochs:
+                       print("Max epochs reached. Ending Training")
+                       break
 
                 try:
                     state = env.reset()
@@ -715,9 +894,15 @@ def main(args=None):
 
             a_in = [(action[0] + 1) / 2, action[1]]
             try:
-                next_state, reward, done, target = env.step(a_in)
-                episode_reward += reward
+                next_state, reward, done, reached_goal = env.step(a_in)
+                if reached_goal:
+                    state = env.reset()  # Reset environment if goal reached
+                    episode_reward = 0
+                    episode_timesteps = 0
+                    env.box_detected_flag = False
+                    continue  # Begin a new episode immediately
 
+                episode_reward += reward
                 done_bool = 0 if episode_timesteps + 1 == max_ep else int(done)
                 replay_buffer.add(state, action, reward, done_bool, next_state)
 
@@ -736,6 +921,10 @@ def main(args=None):
         pass
 
     finally:
+        save_path = os.path.expanduser("~/ros2_ws/src/Heterogenous-Robotics/DRL_robot_navigation_ros2/src/td3/scripts/results")
+        np.save(os.path.join(save_path, "train_vint_accuracies.npy"), network.train_accuracies)
+        np.save(os.path.join(save_path, "vint_losses.npy"), network.losses)
+        print("Training complete. Saved final accuracy and loss data.")
         rclpy.shutdown()
         executor_thread.join()
 

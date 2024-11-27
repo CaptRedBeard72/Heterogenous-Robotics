@@ -46,6 +46,8 @@ install(
     scripts/vint_test_node.py 
     scripts/combined_vint_test_node.py 
     scripts/combined_test_node.py
+    scripts/train_velodyne_node_multiple_experiments.py
+    scripts/vint_train_node_multiple_experiments.py
     launch/robot_state_publisher.launch.py
     launch/robot_state_publisher_combined.launch.py
     launch/train_simulation.launch.py
@@ -55,6 +57,8 @@ install(
     launch/train_vint_simulation.launch.py
     launch/test_vint_simulation.launch.py
     launch/test_combined_simulation.launch.py 
+    launch/train_multi_experiments_simulation.launch.py
+    launch/train_multi_experiments_vint_simulation.launch.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

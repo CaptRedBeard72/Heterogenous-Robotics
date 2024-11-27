@@ -1,0 +1,67 @@
+{
+    "experiments": [
+        {
+            "experiment_name": "baseline",
+            "hyperparameters": {
+                "batch_size": 64,
+                "discount": 0.99,
+                "tau": 0.005,
+                "policy_noise": 0.2,
+                "noise_clip": 0.5,
+                "policy_freq": 2,
+                "learning_rate_actor": 0.0001,
+                "learning_rate_critic": 0.0001
+            },
+            "actor_network": {
+                "activation_function": "relu",
+                "hidden_layers": [1024, 512]
+            },
+            "critic_network": {
+                "activation_function": "relu",
+                "hidden_layers": [1024, 512]
+            }
+        },
+        {
+            "experiment_name": "tuned_learning_rate",
+            "hyperparameters": {
+                "batch_size": 64,
+                "discount": 0.99,
+                "tau": 0.005,
+                "policy_noise": 0.2,
+                "noise_clip": 0.5,
+                "policy_freq": 2,
+                "learning_rate_actor": 0.0005,
+                "learning_rate_critic": 0.0005
+            },
+            "actor_network": {
+                "activation_function": "relu",
+                "hidden_layers": [1024, 512]
+            },
+            "critic_network": {
+                "activation_function": "relu",
+                "hidden_layers": [1024, 512]
+            }
+        },
+        {
+            "experiment_name": "different_activation",
+            "hyperparameters": {
+                "batch_size": 64,
+                "discount": 0.99,
+                "tau": 0.005,
+                "policy_noise": 0.2,
+                "noise_clip": 0.5,
+                "policy_freq": 2,
+                "learning_rate_actor": 0.001,
+                "learning_rate_critic": 0.001
+            },
+            "actor_network": {
+                "activation_function": "tanh",
+                "hidden_layers": [1024, 512]
+            },
+            "critic_network": {
+                "activation_function": "tanh",
+                "hidden_layers": [1024, 512]
+            }
+        }
+    ]
+}

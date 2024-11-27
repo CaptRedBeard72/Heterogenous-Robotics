@@ -35,43 +35,36 @@
 """
 Serialization of sensor_msgs.PointCloud2 messages.
 
+Includes object detection via clustering for targeted exploration.
+
 Author: Tim Field
 ROS2 port by Sebastian Grans (2020)
+Enhancements by Tyler Raettig (2024)
 """
 
-import sys
 
-from collections import namedtuple
-import ctypes
+import sys
 import math
 import struct
-
+import numpy as np
 from sensor_msgs.msg import PointCloud2, PointField
+from sklearn.cluster import DBSCAN
 
-_DATATYPES = {}
-_DATATYPES[PointField.INT8]    = ('b', 1)
-_DATATYPES[PointField.UINT8]   = ('B', 1)
-_DATATYPES[PointField.INT16]   = ('h', 2)
-_DATATYPES[PointField.UINT16]  = ('H', 2)
-_DATATYPES[PointField.INT32]   = ('i', 4)
-_DATATYPES[PointField.UINT32]  = ('I', 4)
-_DATATYPES[PointField.FLOAT32] = ('f', 4)
-_DATATYPES[PointField.FLOAT64] = ('d', 8)
+# Datatypes mapping for PointCloud2 fields
+_DATATYPES = {
+    PointField.INT8: ('b', 1),
+    PointField.UINT8: ('B', 1),
+    PointField.INT16: ('h', 2),
+    PointField.UINT16: ('H', 2),
+    PointField.INT32: ('i', 4),
+    PointField.UINT32: ('I', 4),
+    PointField.FLOAT32: ('f', 4),
+    PointField.FLOAT64: ('d', 8)
+}
 
 def read_points(cloud, field_names=None, skip_nans=False, uvs=[]):
     """
-    Read points from a L{sensor_msgs.PointCloud2} message.
-
-    @param cloud: The point cloud to read from.
-    @type  cloud: L{sensor_msgs.PointCloud2}
-    @param field_names: The names of fields to read. If None, read all fields. [default: None]
-    @type  field_names: iterable
-    @param skip_nans: If True, then don't return any point with a NaN value.
-    @type  skip_nans: bool [default: False]
-    @param uvs: If specified, then only return the points at the given coordinates. [default: empty list]
-    @type  uvs: iterable
-    @return: Generator which yields a list of values for each point.
-    @rtype:  generator
+    Read points from a sensor_msgs.PointCloud2 message.
     """
     assert isinstance(cloud, PointCloud2), 'cloud is not a sensor_msgs.msg.PointCloud2'
     fmt = _get_struct_fmt(cloud.is_bigendian, cloud.fields, field_names)
@@ -84,24 +77,14 @@ def read_points(cloud, field_names=None, skip_nans=False, uvs=[]):
         if uvs:
             for u, v in uvs:
                 p = unpack_from(data, (row_step * v) + (point_step * u))
-                has_nan = False
-                for pv in p:
-                    if isnan(pv):
-                        has_nan = True
-                        break
-                if not has_nan:
+                if not any(isnan(pv) for pv in p):
                     yield p
         else:
             for v in range(height):
                 offset = row_step * v
                 for u in range(width):
                     p = unpack_from(data, offset)
-                    has_nan = False
-                    for pv in p:
-                        if isnan(pv):
-                            has_nan = True
-                            break
-                    if not has_nan:
+                    if not any(isnan(pv) for pv in p):
                         yield p
                     offset += point_step
     else:
@@ -115,81 +98,64 @@ def read_points(cloud, field_names=None, skip_nans=False, uvs=[]):
                     yield unpack_from(data, offset)
                     offset += point_step
 
-def read_points_list(cloud, field_names=None, skip_nans=False, uvs=[]):
+def detect_objects(cloud, detection_range=2.0, eps=0.2, min_samples=10):
     """
-    Read points from a L{sensor_msgs.PointCloud2} message.
-    
-    This function returns a list of namedtuples. It operates on top of the read_points method. For more efficient access use read_points directly. 
- 
-    @param cloud: The point cloud to read from.
-    @type  cloud: L{sensor_msgs.PointCloud2}
-    @param field_names: The names of fields to read. If None, read all fields. [default: None]
-    @type  field_names: iterable
-    @param skip_nans: If True, then don't return any point with a NaN value.
-    @type  skip_nans: bool [default: False]
-    @param uvs: If specified, then only return the points at the given coordinates. [default: empty list]
-    @type  uvs: iterable
-    @return: List of namedtuples containing the values for each point
-    @rtype: list
+    Detect potential objects in the point cloud data by clustering points.
+
+    Parameters:
+    - cloud: PointCloud2 message
+    - detection_range: Max range to consider points for clustering
+
+    Returns:
+    - List of dictionaries with 'center' and 'size' for each cluster
     """
-    assert isinstance(cloud, PointCloud2), 'cloud is not a sensor_msgs.msg.PointCloud2'
+    points = np.array(list(read_points(cloud, field_names=("x", "y", "z"), skip_nans=True)))
+    points = points[(points[:, 0]**2 + points[:, 1]**2)**0.5 < detection_range]  # Filter points within range
 
-    if field_names is None:
-        field_names = [f.name for f in cloud.fields]
+    # Perform clustering
+    clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(points[:, :2])  # Cluster based on x, y
+    clusters = []
+    for label in set(clustering.labels_):
+        if label == -1:
+            continue  # Noise points
+        cluster_points = points[clustering.labels_ == label]
+        clusters.append({
+            "center": cluster_points.mean(axis=0),  # Calculate cluster center
+            "size": len(cluster_points)
+        })
 
-    Point = namedtuple("Point", field_names)
-
-    return [Point._make(l) for l in read_points(cloud, field_names, skip_nans, uvs)]
+    return clusters
 
 def create_cloud(header, fields, points):
     """
-    Create a L{sensor_msgs.msg.PointCloud2} message.
-
-    @param header: The point cloud header.
-    @type  header: L{std_msgs.msg.Header}
-    @param fields: The point cloud fields.
-    @type  fields: iterable of L{sensor_msgs.msg.PointField}
-    @param points: The point cloud points.
-    @type  points: list of iterables, i.e. one iterable for each point, with the
-                   elements of each iterable being the values of the fields for 
-                   that point (in the same order as the fields parameter)
-    @return: The point cloud.
-    @rtype:  L{sensor_msgs.msg.PointCloud2}
+    Create a sensor_msgs.PointCloud2 message.
     """
     cloud_struct = struct.Struct(_get_struct_fmt(False, fields))
-
-    buff = ctypes.create_string_buffer(cloud_struct.size * len(points))
-
-    point_step, pack_into = cloud_struct.size, cloud_struct.pack_into
-    offset = 0
+    data = bytearray()
     for p in points:
-        pack_into(buff, offset, *p)
-        offset += point_step
+        data.extend(cloud_struct.pack(*p))
 
-    return PointCloud2(header=header,
-                       height=1,
-                       width=len(points),
-                       is_dense=False,
-                       is_bigendian=False,
-                       fields=fields,
-                       point_step=cloud_struct.size,
-                       row_step=cloud_struct.size * len(points),
-                       data=buff.raw)
+    return PointCloud2(
+        header=header,
+        height=1,
+        width=len(points),
+        is_dense=False,
+        is_bigendian=False,
+        fields=fields,
+        point_step=cloud_struct.size,
+        row_step=cloud_struct.size * len(points),
+        data=bytes(data)
+    )
 
 def create_cloud_xyz32(header, points):
     """
-    Create a L{sensor_msgs.msg.PointCloud2} message with 3 float32 fields (x, y, z).
-
-    @param header: The point cloud header.
-    @type  header: L{std_msgs.msg.Header}
-    @param points: The point cloud points. 
-    @type  points: iterable
-    @return: The point cloud.
-    @rtype:  L{sensor_msgs.msg.PointCloud2}
+    Create a sensor_msgs.PointCloud2 message with 3 float32 fields (x, y, z).
     """
-    fields = [PointField('x', 0, PointField.FLOAT32, 1),
-              PointField('y', 4, PointField.FLOAT32, 1),
-              PointField('z', 8, PointField.FLOAT32, 1)]
+    fields = [
+        PointField('x', 0, PointField.FLOAT32, 1),
+        PointField('y', 4, PointField.FLOAT32, 1),
+        PointField('z', 8, PointField.FLOAT32, 1)
+    ]
     return create_cloud(header, fields, points)
 
 def _get_struct_fmt(is_bigendian, fields, field_names=None):
@@ -200,10 +166,10 @@ def _get_struct_fmt(is_bigendian, fields, field_names=None):
             fmt += 'x' * (field.offset - offset)
             offset = field.offset
         if field.datatype not in _DATATYPES:
-            print('Skipping unknown PointField datatype [%d]' % field.datatype, file=sys.stderr)
+            print(f'Skipping unknown PointField datatype [{field.datatype}]', file=sys.stderr)
         else:
             datatype_fmt, datatype_length = _DATATYPES[field.datatype]
-            fmt    += field.count * datatype_fmt
+            fmt += field.count * datatype_fmt
             offset += field.count * datatype_length
 
     return fmt

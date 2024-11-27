@@ -2,31 +2,42 @@
 
 import os
 import time
+import json
+
 import numpy as np
+from numpy import ndarray
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.tensorboard import SummaryWriter
-from replay_buffer import ReplayBuffer
+from torch import Tensor
 
 import rclpy
 from rclpy.node import Node
+from rclpy.task import Future
+from rclpy.client import Client
+from rclpy.executors import MultiThreadedExecutor
+
 import threading
-import math
+
 from gazebo_msgs.msg import ModelState, ModelStates
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import Image
 from squaternion import Quaternion
 from std_srvs.srv import Empty
 from visualization_msgs.msg import Marker, MarkerArray
+
+import time
+
 from torchvision import transforms
 from PIL import Image as PILImage
 
 # Parameters
 GOAL_REACHED_DIST = 0.5
-TIME_DELTA = 0.2
+COLLISION_DIST = 0.2
+TIME_DELTA = 0.1
 MAX_DISTANCE_FROM_BOX = 4.0  # Maximum allowed distance from the box
+MAX_BOX_GOAL_DISTANCE = 6.0
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 last_odom = None
@@ -40,15 +51,65 @@ transform = transforms.Compose([
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
 
+last_odom: Odometry = None
+
 # Define ViNT model
 class ViNT(nn.Module):
-    def __init__(self, pretrained=True):
+    def __init__(self):
         super(ViNT, self).__init__()
-        self.model = torch.hub.load('facebookresearch/deit:main', 'deit_base_distilled_patch16_224', pretrained=pretrained)
-        self.model.eval()
+        # Define the ViT structure
+        self.embedding_dim = 768
+        self.num_classes = 1000  # Number of output classes in ViT
+
+        # Patch Embedding
+        self.patch_size = 16
+        self.num_patches = (224 // self.patch_size) ** 2
+        self.patch_embedding = nn.Conv2d(3, self.embedding_dim, kernel_size=self.patch_size, stride=self.patch_size)
+
+        # Class and Distillation tokens
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, self.embedding_dim))
+        self.dist_token = nn.Parameter(torch.zeros(1, 1, self.embedding_dim))
+        self.pos_embedding = nn.Parameter(torch.zeros(1, self.num_patches + 2, self.embedding_dim))  # +2 for class and distillation tokens
+
+        # Transformer Encoder Layers
+        self.transformer = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model=self.embedding_dim, nhead=12, dim_feedforward=3072),
+            num_layers=12
+        )
+
+        # MLP Head for Classification
+        self.mlp_head = nn.Sequential(
+            nn.LayerNorm(self.embedding_dim),
+            nn.Linear(self.embedding_dim, self.num_classes)
+        )
+
+        # Distillation Head for knowledge distillation
+        self.dist_head = nn.Sequential(
+            nn.LayerNorm(self.embedding_dim),
+            nn.Linear(self.embedding_dim, self.num_classes)
+        )
 
     def forward(self, x):
-        return self.model(x)
+        # Patch Embedding
+        x = self.patch_embedding(x).flatten(2).transpose(1, 2)
+
+        # Add Class and Distillation tokens
+        batch_size = x.shape[0]
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
+        dist_tokens = self.dist_token.expand(batch_size, -1, -1)
+        x = torch.cat((cls_tokens, dist_tokens, x), dim=1)
+
+        # Add positional encoding
+        x = x + self.pos_embedding
+
+        # Transformer Encoder
+        x = self.transformer(x)
+
+        # Separate outputs for classification and distillation heads
+        cls_output = self.mlp_head(x[:, 0])
+        dist_output = self.dist_head(x[:, 1])
+
+        return cls_output, dist_output
 
 vint_model = ViNT().to(device)
 
@@ -61,7 +122,7 @@ class Actor(nn.Module):
         self.layer_3 = nn.Linear(512, action_dim)
         self.tanh = nn.Tanh()
 
-    def forward(self, s):
+    def forward(self, s: Tensor) -> Tensor:
         s = F.relu(self.layer_1(s))
         s = F.relu(self.layer_2(s))
         a = self.tanh(self.layer_3(s))
@@ -72,9 +133,11 @@ class TD3:
         self.actor = Actor(state_dim, action_dim).to(device)
         self.max_action = max_action
 
-    def get_action(self, state):
-        state = torch.Tensor(state.reshape(1, -1)).to(device)
-        return self.actor(state).cpu().data.numpy().flatten()
+    def get_action(self, state: ndarray) -> ndarray:
+        state_tensor: torch.Tensor = torch.Tensor(state.reshape(1, -1)).to(device)
+        action_tensor: torch.Tensor = self.actor(state_tensor).cpu()
+        action_ndarray: ndarray = action_tensor.detach().numpy()
+        return action_ndarray.flatten()
 
     def load(self, filename, directory):
         actor_path = os.path.join(directory, f"{filename}_actor.pth")
@@ -95,7 +158,9 @@ class GazeboEnv(Node):
         self.box_detected_flag = False
         self.previous_box_position = None
         self.timeout_start_time = time.time()
-        self.timeout_duration = 240
+        self.timeout_duration = 10 * 60
+        self.previous_box_to_goal_distance = None 
+
 
         self.set_self_state = ModelState()
         self.set_self_state.model_name = "r1"
@@ -119,10 +184,8 @@ class GazeboEnv(Node):
         self.req = Empty.Request()
 
         self.publisher = self.create_publisher(MarkerArray, "goal_point", 3)
-        self.box_marker_pub = self.create_publisher(Marker, 'box_marker', 10)
 
         self.model_states_subscriber = self.create_subscription(ModelStates, "/gazebo/model_states", self.model_states_callback, 10)
-        self.camera_subscriber = self.create_subscription(Image, "/camera/image_raw", self.camera_callback, 10)
 
         self.start_time = None
         self.last_box_detection_time = 0
@@ -157,62 +220,118 @@ class GazeboEnv(Node):
         except Exception as e:
             self.get_logger().error(f"Error processing camera image: {e}")
 
-    def model_states_callback(self, msg):
+    def model_states_callback(self, msg: ModelStates):
         try:
             if "target_box" in msg.name:
                 index = msg.name.index("target_box")
                 self.box_state.pose = msg.pose[index]
-
-                # Update the marker's position
-                self.box_marker.header.stamp = self.get_clock().now().to_msg()
-                self.box_marker.pose = self.box_state.pose
-                self.box_marker_pub.publish(self.box_marker)
-
-                # self.get_logger().info(f"Box state updated: ({self.box_state.pose.position.x}, {self.box_state.pose.position.y})")
+                # self.get_logger().info(f"Updated box state: {self.box_state.pose}")
             else:
                 self.get_logger().warning("Box model not found in the model states.")
         except Exception as e:
             self.get_logger().error(f"Error in model_states_callback: {e}")
 
-    def is_box_detected(self, image_features, detection_threshold=3.0):
-        # Check if any feature exceeds the threshold
+    def is_box_detected(self, image_features, detection_threshold=2.0):
         detected = torch.any(image_features > detection_threshold).item()
-        # self.get_logger().info(f"Box detection status: {detected}, Threshold: {detection_threshold}")
         return detected
 
     def has_box_moved(self):
         current_box_position = [self.box_state.pose.position.x, self.box_state.pose.position.y]
+        
         if self.previous_box_position is None:
             self.previous_box_position = current_box_position
-            return False
-        box_moved = np.linalg.norm(np.array(current_box_position) - np.array(self.previous_box_position)) > 0.01
-        self.previous_box_position = current_box_position
+            return False  # No movement detected on the first check
+        
+        # Calculate movement magnitude
+        box_movement = np.linalg.norm(np.array(current_box_position) - np.array(self.previous_box_position))
+        box_moved = box_movement > 0.01  # Increase threshold to 1 cm for floating-point precision
+
+        # Log debug information
+        # self.get_logger().info(f"Previous Box Position: {self.previous_box_position}")
+        # self.get_logger().info(f"Current Box Position: {current_box_position}")
+        # self.get_logger().info(f"Movement Magnitude: {box_movement}")
+        # self.get_logger().info(f"Box Moved Detected: {box_moved}")
+
+        # Update previous position only if movement is detected
+        if box_moved:
+            self.previous_box_position = current_box_position
+
         return box_moved
 
-    def observe_collision(self, robot_position, box_position):
-        collision_distance = 0.47  # Based on half of the box size (0.5 / 2)
-        distance = np.linalg.norm(np.array(robot_position) - np.array(box_position))
-        # self.get_logger().info(f"Distance to box: {distance}, Collision threshold: {collision_distance}")
-        if distance < collision_distance:
-            self.get_logger().info("Box touched!")
-            return True
-        return False
+    def observe_collision(self, laser_data):
+        min_laser = min(laser_data)
+        # self.get_logger().info(f"Min laser distance: {min_laser}")
+        if min_laser < COLLISION_DIST:
+            # self.get_logger().info("Box touched!")
+            return True, min_laser
+        return False, min_laser
+    
+    def _handle_collision(self, angle):
+        box_x = self.box_state.pose.position.x
+        box_y = self.box_state.pose.position.y
+        direction_to_goal = np.arctan2(self.goal_y - box_y, self.goal_x - box_x)
+
+        angle_diff = direction_to_goal - angle
+        while angle_diff > np.pi:
+            angle_diff -= 2 * np.pi
+        while angle_diff < -np.pi:
+            angle_diff += 2 * np.pi
+
+        vel_cmd = Twist()
+        vel_cmd.linear.x = 0.5  # Move forward with constant speed
+        vel_cmd.angular.z = 1 * -angle_diff  # Adjust orientation towards the goal
+        self.vel_pub.publish(vel_cmd)
+
+    def _approach_and_align(self, angle):
+        self.box_detected_flag = True
+        box_x = self.box_state.pose.position.x
+        box_y = self.box_state.pose.position.y
+        direction_to_box = np.arctan2(box_y - self.odom_y, box_x - self.odom_x)
+
+        angle_diff = direction_to_box - angle
+        while angle_diff > np.pi:
+            angle_diff -= 2 * np.pi
+        while angle_diff < -np.pi:
+            angle_diff += 2 * np.pi
+
+        vel_cmd = Twist()
+        vel_cmd.linear.x = 0.5  # Move forward with constant speed
+        vel_cmd.angular.z = 1 * -angle_diff  # Adjust orientation towards the box
+        self.vel_pub.publish(vel_cmd)
+
+    def _explore(self, action, clusters=None):
+        vel_cmd = Twist()
+        if clusters:
+            # Choose the closest cluster as the exploration target
+            closest_cluster = min(clusters, key=lambda c: np.linalg.norm(c["center"][:2]))
+            target_angle = np.arctan2(closest_cluster["center"][1], closest_cluster["center"][0])
+            vel_cmd.linear.x = 0.5
+            vel_cmd.angular.z = target_angle * 0.5
+        else:
+            vel_cmd.linear.x = float(action[0])
+            vel_cmd.angular.z = float(action[1])
+        self.vel_pub.publish(vel_cmd)
 
     def step(self, action):
+        """
+        Executes one step in the environment based on the provided action.
+        """
         global last_odom
         done = False
-        box_detected = False
 
+        # Ensure odometry data is available
         if last_odom is None:
             start_time = time.time()
             timeout = 10
             while last_odom is None and (time.time() - start_time) < timeout:
                 rclpy.spin_once(self, timeout_sec=0.1)
             if last_odom is None:
-                return np.zeros(state_dim), 0, True, False
+                return np.zeros(self.environment_dim + 7), 0, True, False
 
+        # Update robot and box positions
         self.odom_x = last_odom.pose.pose.position.x
         self.odom_y = last_odom.pose.pose.position.y
+
         quaternion = Quaternion(
             last_odom.pose.pose.orientation.w,
             last_odom.pose.pose.orientation.x,
@@ -222,142 +341,112 @@ class GazeboEnv(Node):
         euler = quaternion.to_euler(degrees=False)
         angle = round(euler[2], 4)
 
+        box_x = self.box_state.pose.position.x
+        box_y = self.box_state.pose.position.y
+
+        current_box_to_goal_distance = np.linalg.norm(
+            [box_x - self.goal_x, box_y - self.goal_y]
+        )
+        distance_to_box = np.linalg.norm([self.odom_x - box_x, self.odom_y - box_y])
+
+        if self.previous_box_to_goal_distance is None:
+            self.previous_box_to_goal_distance = current_box_to_goal_distance
+
         robot_position = [self.odom_x, self.odom_y]
 
         if isinstance(self.camera_data, np.ndarray):
             self.camera_data = torch.tensor(self.camera_data).to(device).float()
 
         image_features = vint_model(self.camera_data.unsqueeze(0)).squeeze(0)
-        # self.get_logger().info(f"Image features: {image_features[:10]}")  # Log first 10 features for brevity
-
-        box_detected = self.is_box_detected(image_features)
-        # self.get_logger().info(f"Box detected: {box_detected}")
 
         box_x = self.box_state.pose.position.x
         box_y = self.box_state.pose.position.y
         box_position = [box_x, box_y]
 
-        # self.get_logger().info(f"Calling observe_collision with robot_position: {robot_position} and box_position: {box_position}")
         collision = self.observe_collision(robot_position, box_position)
-        # self.get_logger().info(f"observe_collision returned: {collision}")
+        self.collision = collision
+        box_moved = self.has_box_moved()
+        box_detected = self.is_box_detected(image_features)
+        self.box_detected_flag = box_detected
 
+        # Control logic
         if collision:
-            box_x = self.box_state.pose.position.x
-            box_y = self.box_state.pose.position.y
-            direction_to_goal = np.arctan2(self.goal_y - box_y, self.goal_x - box_x)
-
-            # Normalize the angle difference to the range [-pi, pi]
-            angle_diff = direction_to_goal - angle
-            while angle_diff > np.pi:
-                angle_diff -= 2 * np.pi
-            while angle_diff < -np.pi:
-                angle_diff += 2 * np.pi
-
-            vel_cmd = Twist()
-            vel_cmd.linear.x = 0.5  # Move forward with constant speed
-            vel_cmd.angular.z = 1 * -angle_diff  # Adjust orientation towards the goal
-            self.vel_pub.publish(vel_cmd)
+            self._handle_collision(angle)
         elif box_detected:
-            self.box_detected_flag = True
-            box_x = self.box_state.pose.position.x
-            box_y = self.box_state.pose.position.y
-            direction_to_box = np.arctan2(box_y - self.odom_y, box_x - self.odom_x)
-
-            # Normalize the angle difference to the range [-pi, pi]
-            angle_diff = direction_to_box - angle
-            while angle_diff > np.pi:
-                angle_diff -= 2 * np.pi
-            while angle_diff < -np.pi:
-                angle_diff += 2 * np.pi
-
-            vel_cmd = Twist()
-            vel_cmd.linear.x = 0.5  # Move forward with constant speed
-            vel_cmd.angular.z = 1 * -angle_diff  # Adjust orientation towards the box
-            self.vel_pub.publish(vel_cmd)
+            self._approach_and_align(angle)
         else:
-            self.box_detected_flag = False
-            vel_cmd = Twist()
-            vel_cmd.linear.x = float(action[0])
-            vel_cmd.angular.z = float(action[1])
-            self.vel_pub.publish(vel_cmd)
-            
+            self._explore(action)
+
         self.call_service(self.unpause)
         time.sleep(TIME_DELTA)
         self.call_service(self.pause)
 
-        distance_to_goal = np.linalg.norm([box_x - self.goal_x, box_y - self.goal_y])
-        distance_to_box = np.linalg.norm([self.odom_x - box_x, self.odom_y - box_y])
+        # Compute reward and check termination conditions
+        timeout = (time.time() - self.timeout_start_time) > self.timeout_duration
+        reached_goal = current_box_to_goal_distance < GOAL_REACHED_DIST
+        box_too_far = current_box_to_goal_distance > MAX_BOX_GOAL_DISTANCE
+        robot_too_far = distance_to_box > MAX_DISTANCE_FROM_BOX
 
+        reward = self.get_reward(
+            reached_goal=reached_goal,
+            timeout=timeout,
+            box_moved=box_moved,
+            current_box_to_goal_distance=current_box_to_goal_distance,
+        )
+        done = timeout or reached_goal or box_too_far or robot_too_far
+
+        # Construct state
         robot_state = [
-            distance_to_goal,
+            current_box_to_goal_distance,
             angle,
             distance_to_box,
             box_x - self.odom_x,
             box_y - self.odom_y,
             action[0],
-            action[1]
+            action[1],
         ]
-
+        
         state = torch.cat((image_features, torch.tensor(robot_state).to(device).float()))
 
-        box_detected = self.is_box_detected(image_features)
+        # Log termination conditions
+        if timeout:
+            self.get_logger().info("Episode terminated due to timeout.")
+        if reached_goal:
+            self.get_logger().info("Episode terminated as goal was reached.")
+        if box_too_far:
+            self.get_logger().info("Episode terminated as box moved too far from the goal.")
+        if robot_too_far:
+            self.get_logger().info("Episode terminated as robot moved too far from the box.")
 
-        reached_goal = distance_to_goal < GOAL_REACHED_DIST
-        box_moved = self.has_box_moved()
-        current_time = time.time()
+        # current_box_position = np.array([box_x, box_y])
+        # box_movement = np.linalg.norm(current_box_position - self.previous_box_position)
+        # self.get_logger().info(f"Box Movement: {box_movement}")
 
-        if current_time - self.timeout_start_time > self.timeout_duration:
-            self.get_logger().info("Timeout: The robot did not achieve the goal in the given time.")
-            done = True
-            reward = self.get_reward(
-                reached_goal, 
-                collision=collision, 
-                timeout=True, 
-                box_detected=box_detected, 
-                current_time=current_time, 
-                box_moved=box_moved, 
-                distance_to_box=distance_to_box
-            )
-        else:
-            reward = self.get_reward(
-                reached_goal, 
-                collision=collision, 
-                timeout=False, 
-                box_detected=box_detected, 
-                current_time=current_time, 
-                box_moved=box_moved, 
-                distance_to_box=distance_to_box
-            )
+        # progress = self.previous_box_to_goal_distance - current_box_to_goal_distance
+        # self.get_logger().info(f"Box Progress: {progress}")
 
-        if distance_to_box > MAX_DISTANCE_FROM_BOX:
-            self.get_logger().info("Penalty: Robot too far from box -300 points.")
-            done = True
-            reward -= 300.0
+        # self.get_logger().info(f"Action received in step: {action}")
+
+        return state, reward, done, current_box_to_goal_distance < GOAL_REACHED_DIST
+
+    def get_reward(self, reached_goal, timeout, box_moved, current_box_to_goal_distance):
+        reward = 0.0
+        progress = 0.0
 
         if reached_goal:
-            done = True
-
-        return state.detach().cpu().numpy(), reward, done, reached_goal
-
-    def get_reward(self, target, collision, timeout, box_detected, current_time, box_moved, distance_to_box):
-        reward = 0.0
-
-        if target:
-            self.get_logger().info("Reward: Target reached +1000 points!")
-            reward = 1000.0
+            reward = 500.0
         elif timeout:
-            self.get_logger().info("Penalty: Timeout occurred -500 points")
-            reward = -500.0
-        elif collision and box_moved:
-            self.get_logger().info("Reward: Box contact +100 points")
-            reward = 100.0
-        elif box_detected and (current_time - self.last_box_detection_time) > self.box_detection_cooldown:
-            self.get_logger().info("Reward: Box detected +20 points")
-            self.last_box_detection_time = current_time
-            reward = 20.0
-        else:
-            reward += max(0, (2.0 - distance_to_box) * 5)
+            reward = -20.0
+        elif box_moved:
+            progress = self.previous_box_to_goal_distance - current_box_to_goal_distance
+            reward += max(2.0, 10.0 * progress)  # Minimum reward for any movement
 
+        elif self.box_detected_flag:
+            reward += 5.0  # Small reward for detecting the box
+        else:
+            reward = -0.05  # Penalize lack of meaningful action
+
+        # self.get_logger().info(f"Reward: {reward}, Progress: {progress}")
         return reward
 
     def reset(self):
@@ -388,16 +477,14 @@ class GazeboEnv(Node):
         self.set_self_state.pose.orientation.y = 0.0
         self.set_self_state.pose.orientation.z = 0.0
         self.set_self_state.pose.orientation.w = 1.0
-        self.set_state.publish(self.set_self_state)
 
-        self.get_logger().info(f"Reset: Robot initial position: ({self.set_self_state.pose.position.x}, {self.set_self_state.pose.position.y})")
-        self.get_logger().info(f"Reset: Box initial position: ({self.box_state.pose.position.x}, {self.box_state.pose.position.y})")
+        self.set_state.publish(self.set_self_state)
 
         while not self.unpause.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('service not available, waiting again...')
         try:
             self.unpause.call_async(self.req)
-        except rclpy.ServiceException as exc:
+        except Exception as exc:
             self.get_logger().error(f'Service call failed: {exc}')
 
         time.sleep(TIME_DELTA + 1.0)  # Increased sleep time to allow the simulation to stabilize
@@ -434,23 +521,25 @@ class GazeboEnv(Node):
 
         state = torch.cat((image_features, torch.tensor(robot_state).to(device).float()))
 
-        return state.detach().cpu().numpy()
+        return state
 
-    def call_service(self, service):
+    def call_service(self, service: Client) -> None:
         while not service.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('service not available, waiting again...')
         try:
-            future = service.call_async(Empty.Request())
+            # self.get_logger().info(f"Calling service: {service.srv_name}")
+            future: Future = service.call_async(Empty.Request())
             rclpy.spin_until_future_complete(self, future)
-        except rclpy.ServiceException as e:
+            # self.get_logger().info(f"Service {service.srv_name} call completed successfully.")
+        except Exception as e:
             self.get_logger().error(f"Service call failed: {e}")
 
     def publish_goal_marker(self):
         markerArray = MarkerArray()
         marker = Marker()
         marker.header.frame_id = "odom"
-        marker.type = marker.CYLINDER
-        marker.action = marker.ADD
+        marker.type = Marker.CYLINDER
+        marker.action = Marker.ADD
         marker.scale.x = 0.1
         marker.scale.y = 0.1
         marker.scale.z = 0.01
@@ -482,7 +571,8 @@ if __name__ == '__main__':
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     seed = 0
     max_ep = 500
-    file_name = "td3_camera"  # Use the LiDAR model actor data
+    file_name = "td3_camera"
+    result_dir = os.path.expanduser("~/ros2_ws/src/Heterogenous-Robotics/DRL_robot_navigation_ros2/src/td3/scripts/results")
     model_dir = "/home/tyler/ros2_ws/src/Heterogenous-Robotics/DRL_robot_navigation_ros2/src/td3/scripts/pytorch_models"  # Update this path to your model directory
     environment_dim = 999
     robot_dim = 8
@@ -505,16 +595,15 @@ if __name__ == '__main__':
     env = GazeboEnv(environment_dim)
     odom_subscriber = OdomSubscriber()
 
-
-    executor = rclpy.executors.MultiThreadedExecutor()
+    executor: MultiThreadedExecutor = MultiThreadedExecutor(num_threads=16)
     executor.add_node(odom_subscriber)
     executor.add_node(env)
 
     executor_thread = threading.Thread(target=executor.spin, daemon=True)
     executor_thread.start()
-    
-    rate = odom_subscriber.create_rate(2)
 
+    rate = env.create_rate(10)
+    
     while rclpy.ok():
         if done:
             state = env.reset()

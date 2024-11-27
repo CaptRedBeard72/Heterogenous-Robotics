@@ -111,7 +111,7 @@
       <pose>3 0 0.25 0 0 0</pose>
       <link name='link'>
         <inertial>
-          <mass>0.5</mass>
+          <mass>2.0</mass>
           <inertia>
             <ixx>0.083</ixx>
             <iyy>0.083</iyy>
@@ -535,19 +535,19 @@
           <ray>
             <scan>
               <horizontal>
-                <resolution>1</resolution>
+                <resolution>0.5</resolution>
                 <max_angle>0.7854</max_angle>
                 <min_angle>-0.7854</min_angle>
                 <samples>360</samples>
               </horizontal>
               <vertical>
-                <samples>1</samples>
-                <min_angle>0</min_angle>
-                <max_angle>0</max_angle>
+                <samples>5</samples>
+                <min_angle>-0.05</min_angle>
+                <max_angle>0.05</max_angle>
               </vertical>
             </scan>
             <range>
-              <min>0.08</min>
+              <min>0.075</min>
               <max>10</max>
               <resolution>0.01</resolution>
             </range>
@@ -562,7 +562,7 @@
           <always_on>1</always_on>
           <update_rate>50</update_rate>
           <visualize>1</visualize>
-          <pose>0.125 0 0.25 0 -0 0</pose>
+          <pose>0.125 0 0.3 0 -0 0</pose>
         </sensor>
         <sensor name='velodyne-VLP16' type='ray'>
           <visualize>1</visualize> <!-- Enable visualization for debugging -->
