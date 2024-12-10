@@ -7,7 +7,7 @@ Link to a full breakdown of how TD3 works
 https://spinningup.openai.com/en/latest/algorithms/td3.html
 ```
 
-# Visual Navigation Transofromer (ViNT)
+# Visual Navigation Transformer (ViNT)
 ```
 Link to a full breakdown on how ViNT works
 https://general-navigation-models.github.io/vint/index.html
